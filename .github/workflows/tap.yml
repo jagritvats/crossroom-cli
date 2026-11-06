@@ -1,0 +1,128 @@
+# Points the Homebrew formula in jagritvats/homebrew-crossroom at a version of `crossroom` npm already serves: the
+# same tarball, pinned by the SHA-256 computed here after its sha512 is checked against npm's. publish.yml
+# calls it after a release; run it from the Actions tab to move the formula by hand. It pushes with the
+# TAP_DEPLOY_KEY secret, the private half of a deploy key with write access to the tap and nothing else.
+# A formula already at that version is left as it is, and a version older than the formula's is refused.
+name: tap
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The crossroom version on npm to point the formula at
+        type: string
+        required: true
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  formula:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    env:
+      WANTED: ${{ inputs.version }}
+    steps:
+      # npm can take a minute to serve a version it has just accepted, so the check waits for it.
+      - name: Find the tarball on npm
+        id: npm
+        run: |
+          if ! [[ "$WANTED" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "::error::'$WANTED' is not a release version (major.minor.patch). The formula was not changed." >&2
+            exit 1
+          fi
+          for try in 1 2 3 4 5 6 7 8 9 10; do
+            got="$(npm view "crossroom@$WANTED" version 2>/dev/null || true)"
+            [ "$got" = "$WANTED" ] && break
+            [ "$try" = 10 ] && { echo "::error::npm does not serve crossroom@$WANTED. The formula was not changed." >&2; exit 1; }
+            sleep 15
+          done
+          url="https://registry.npmjs.org/crossroom/-/crossroom-$WANTED.tgz"
+          tarball="$RUNNER_TEMP/crossroom.tgz"
+          curl -fsSL --retry 3 -o "$tarball" "$url"
+          integrity="$(npm view "crossroom@$WANTED" dist.integrity)"
+          computed="sha512-$(openssl dgst -sha512 -binary "$tarball" | base64 -w0)"
+          if [ "$integrity" != "$computed" ]; then
+            echo "::error::The tarball downloaded does not match npm's integrity for crossroom@$WANTED. The formula was not changed." >&2
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$tarball" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up the deploy key
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "::error::The TAP_DEPLOY_KEY secret is not set. The formula was not changed." >&2
+            exit 1
+          fi
+          key="$RUNNER_TEMP/tap-key"
+          known="$RUNNER_TEMP/tap-known-hosts"
+          install -m 600 /dev/null "$key"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$key"
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$known"
+          echo "GIT_SSH_COMMAND=ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+
+      - name: Clone the tap
+        run: git clone --depth 1 git@github.com:jagritvats/homebrew-crossroom.git "$RUNNER_TEMP/tap"
+
+      # Exactly one url line and one sha256 line are rewritten, or nothing is.
+      - name: Point the formula at the version
+        env:
+          FORMULA: ${{ runner.temp }}/tap/Formula/crossroom.rb
+          TARBALL: ${{ steps.npm.outputs.url }}
+          SHA256: ${{ steps.npm.outputs.sha256 }}
+        run: |
+          node - <<'EOF'
+          const fs = require('node:fs');
+          const { FORMULA, TARBALL, SHA256, WANTED } = process.env;
+          const lines = fs.readFileSync(FORMULA, 'utf8').split('\n');
+          const head = '  url "https://registry.npmjs.org/crossroom/-/crossroom-';
+          const urlAt = lines.flatMap((l, i) => (l.startsWith(head) && l.endsWith('.tgz"') ? [i] : []));
+          const shaAt = lines.flatMap((l, i) => (/^  sha256 "[0-9a-f]{64}"$/.test(l) ? [i] : []));
+          if (urlAt.length !== 1 || shaAt.length !== 1) {
+            console.error('::error::Formula/crossroom.rb should have one npm url line and one sha256 line; it has ' + urlAt.length + ' and ' + shaAt.length + '. The formula was not changed.');
+            process.exit(1);
+          }
+          const current = lines[urlAt[0]].slice(head.length, -'.tgz"'.length);
+          const release = /^[0-9]+[.][0-9]+[.][0-9]+$/;
+          const older = (a, b) => {
+            const p = a.split('.').map(Number);
+            const q = b.split('.').map(Number);
+            for (let i = 0; i < 3; i++) if (p[i] !== q[i]) return p[i] < q[i];
+            return false;
+          };
+          if (release.test(current) && older(WANTED, current)) {
+            console.error('::error::The formula is at ' + current + ', newer than ' + WANTED + '. The formula was not changed.');
+            process.exit(1);
+          }
+          lines[urlAt[0]] = '  url "' + TARBALL + '"';
+          lines[shaAt[0]] = '  sha256 "' + SHA256 + '"';
+          fs.writeFileSync(FORMULA, lines.join('\n'));
+          EOF
+
+      - name: Commit and push
+        working-directory: ${{ runner.temp }}/tap
+        run: |
+          if git diff --quiet; then
+            echo "The formula is already at crossroom $WANTED. Nothing to commit."
+            exit 0
+          fi
+          git diff
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "crossroom $WANTED"
+          git push origin HEAD
+
+      - name: Remove the deploy key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tap-key"

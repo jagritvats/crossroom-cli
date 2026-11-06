@@ -4,6 +4,7 @@
 # publishes, a pushed tag included, and a version npm already has is refused before anything is built.
 # It authenticates with the NPM_TOKEN secret (a granular token that may publish `crossroom`, with
 # "Bypass two-factor authentication"), or with npm trusted publishing set up for this workflow.
+# After a release, its `tap` job runs tap.yml, which moves the Homebrew formula to the new version.
 name: publish
 
 on:
@@ -78,3 +79,12 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Once a release is on npm, the Homebrew formula follows it (tap.yml). A prerelease stays on npm only.
+  tap:
+    needs: publish
+    if: ${{ inputs.release && !contains(inputs.version, '-') }}
+    uses: ./.github/workflows/tap.yml
+    with:
+      version: ${{ inputs.version }}
+    secrets: inherit

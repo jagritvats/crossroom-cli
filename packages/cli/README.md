@@ -20,6 +20,12 @@ crossroom help
 
 Needs Node 22.13 or newer. The command has no dependencies to install.
 
+On macOS or Linux, Homebrew installs the same npm release, with Node:
+
+```bash
+brew install jagritvats/crossroom/crossroom
+```
+
 ## Start a room
 
 | Command | What it does |
