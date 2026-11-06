@@ -1,18 +1,22 @@
-# Publishes the `crossroom` command (packages/cli) to npm. Pushing a tag `v<version>` (the version in
-# packages/cli/package.json) publishes it with provenance; running it from the Actions tab is a dry
-# run unless dry_run is unticked. It authenticates with the NPM_TOKEN secret, or with npm trusted
-# publishing set up for this repository and workflow, which needs no token.
+# Publishes the `crossroom` command (packages/cli) to npm, and only when asked to in so many words:
+# run it from the Actions tab, type the version packages/cli/package.json carries, and tick
+# `release`. Unticked it is a dry run (build, smoke test, `npm publish --dry-run`). Nothing else
+# publishes, a pushed tag included, and a version npm already has is refused before anything is built.
+# It authenticates with the NPM_TOKEN secret (a granular token that may publish `crossroom`, with
+# "Bypass two-factor authentication"), or with npm trusted publishing set up for this workflow.
 name: publish
 
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: Build and check the package without publishing it
+      version:
+        description: The version to publish, exactly as packages/cli/package.json has it
+        type: string
+        required: true
+      release:
+        description: Publish to npm. Leave unticked for a dry run
         type: boolean
-        default: true
-  push:
-    tags: ['v*']
+        default: false
 
 concurrency:
   group: publish
@@ -39,14 +43,20 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Check the tag matches the package version
-        if: github.event_name == 'push'
+      # The version typed must be the one the package carries, and one npm does not have yet.
+      - name: Check the version
+        env:
+          WANTED: ${{ inputs.version }}
         run: |
           version="$(node -p "require('./packages/cli/package.json').version")"
-          case "$GITHUB_REF_NAME" in
-            "v$version"|"v$version-"*) ;;
-            *) echo "Tag $GITHUB_REF_NAME does not name packages/cli version $version" >&2; exit 1 ;;
-          esac
+          if [ "$WANTED" != "$version" ]; then
+            echo "::error::Asked for $WANTED, but packages/cli/package.json is $version. Nothing was published." >&2
+            exit 1
+          fi
+          if npm view "crossroom@$version" version >/dev/null 2>&1; then
+            echo "::error::crossroom@$version is already on npm. Raise the version first. Nothing was published." >&2
+            exit 1
+          fi
 
       - run: pnpm typecheck
 
@@ -58,12 +68,12 @@ jobs:
           node packages/cli/dist/crossroom.mjs help start > /dev/null
 
       - name: Publish (dry run)
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        if: ${{ !inputs.release }}
         working-directory: packages/cli
         run: npm publish --dry-run --access public
 
       - name: Publish
-        if: github.event_name == 'push' || !inputs.dry_run
+        if: ${{ inputs.release }}
         working-directory: packages/cli
         run: npm publish --provenance --access public
         env:
