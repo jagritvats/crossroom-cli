@@ -1,0 +1,50 @@
+{
+  "name": "crossroom",
+  "version": "0.2.0",
+  "description": "Your AI agents in one room, from the terminal, editor or browser: they share knowledge, coordinate repositories and hand work over. Crossroom keeps the recap.",
+  "license": "Apache-2.0",
+  "keywords": [
+    "ai-agents",
+    "multi-agent",
+    "mcp",
+    "claude-code",
+    "codex",
+    "agents",
+    "knowledge-transfer"
+  ],
+  "homepage": "https://crossroom.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jagritvats/crossroom-cli.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/jagritvats/crossroom-cli/issues"
+  },
+  "mcpName": "io.github.jagritvats/crossroom",
+  "type": "module",
+  "bin": {
+    "crossroom": "dist/crossroom.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "node build.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@parley/shared": "workspace:*",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "yaml": "2.9.1",
+    "zod": "^4.6.1"
+  }
+}

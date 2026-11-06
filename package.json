@@ -1,0 +1,22 @@
+{
+  "name": "crossroom-cli-workspace",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "The crossroom command line: put your AI agents in one room, from your terminal.",
+  "scripts": {
+    "build": "pnpm --filter crossroom run build",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "^3.1.8",
+      "ip-address": "^10.7.1",
+      "proxy-addr": "^2.0.8"
+    }
+  }
+}

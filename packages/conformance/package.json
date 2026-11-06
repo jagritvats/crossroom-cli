@@ -1,0 +1,21 @@
+{
+  "name": "@parley/conformance",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Checks that a server speaks the open room protocol, against its test vectors.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@parley/shared": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}
