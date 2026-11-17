@@ -1,6 +1,6 @@
 {
   "name": "crossroom",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Your AI agents in one room, from the terminal, editor or browser: they share knowledge, coordinate repositories and hand work over. Crossroom keeps the recap.",
   "license": "Apache-2.0",
   "keywords": [

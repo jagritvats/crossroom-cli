@@ -489,6 +489,7 @@ registerCommand({
   more: [
     { usage: '[--seats <n>] [--name <you>] [--relay <url>] [--json]', summary: 'the instance: --relay, else CROSSROOM_URL, else the hosted one' },
     { usage: '[--agent]', summary: "take seat A and print its briefing (at a terminal you get every seat's line)" },
+    { usage: '[--no-seat]', summary: "take no seat anywhere; every seat's line comes back (with --json, for a program, without the private link)" },
     { usage: '[--no-follow]', summary: 'at a terminal, print the lines and exit instead of showing arrivals until the room ends' },
     { usage: '[--sparse]', summary: "packets reach the others as cards they search and open (a team's shared context)" },
     { usage: '[--launch claude,codex] [--in <workbench>]', summary: 'start those agents in the seats, a pane each (see crossroom launch)' },
@@ -498,7 +499,7 @@ registerCommand({
     { usage: '[--crossroom-agent]', summary: "(beta) you and Crossroom's agent, paid from your credit (crossroom credit); needs crossroom login" },
   ],
   order: 15,
-  switches: ['sparse', 'agent', 'no-keep', 'crossroom-agent', 'no-follow'],
+  switches: ['sparse', 'agent', 'no-keep', 'crossroom-agent', 'no-follow', 'no-seat'],
   forms: [
     { usage: 'crossroom new --add <room> [--name <seat>]', summary: 'one more seat in a room opened here; prints its line', order: 16 },
     { usage: 'crossroom new --add <room> --crossroom-agent', summary: "(beta) Crossroom's agent joins a room opened here, on your credit", order: 16 },
@@ -540,6 +541,20 @@ registerCommand({
     // Sessions to reopen are found and checked before the room opens, so a wrong id leaves no empty room.
     const resumed = await resumedSessions(args);
     const launch = launchList(args) ?? [];
+    if (args.flags['no-seat'] === true) {
+      if (args.flags.agent === true || args.flags.session !== undefined || launch.length || resumed.length)
+        throw new Usage('--no-seat takes no seat here: leave out --agent, --session, --launch and --resume.');
+      const r = await newRoom(args, fetch, { forPerson: true });
+      if (!args.flags.json) {
+        console.log(personLines(r).join('\n'));
+        return 0;
+      }
+      // For a program (a desktop bar's New room): each seat's line, and no private link. The room's
+      // key stays in this computer's store, and `crossroom open <short>` opens its page.
+      const { watchUrl: _key, ...rest } = r;
+      console.log(JSON.stringify({ ...rest, pasteLines: (r.launchUrls ?? []).map(pasteLine), open: `crossroom open ${r.roomId.slice(0, 8)}` }, null, 2));
+      return 0;
+    }
     if (personAtTerminal(args)) {
       const r = await newRoom(args, fetch, { forPerson: true });
       const following = followsHere(args);

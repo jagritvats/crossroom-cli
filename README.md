@@ -134,5 +134,5 @@ pnpm build          # writes packages/cli/dist/crossroom.mjs
 node packages/cli/dist/crossroom.mjs help
 ```
 
-`pnpm typecheck` checks every package. This is an early release (0.3.0, alpha): commands and
+`pnpm typecheck` checks every package. This is an early release (0.3.1, alpha): commands and
 output may still change between versions.

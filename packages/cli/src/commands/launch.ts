@@ -42,7 +42,7 @@ import { resolveBin } from '../runners/adapters.js';
 import { registerCommand } from './index.js';
 import { localSessions, type ResolvedSession, resolveResume, resumeSpecs, type SessionSource } from './local-sessions.js';
 
-export const WORKBENCHES = ['tmux', 'wezterm', 'kitty', 'warp', 'wt', 'orca', 'paseo', 'print'] as const;
+export const WORKBENCHES = ['tmux', 'wezterm', 'kitty', 'warp', 'wt', 'orca', 'paseo', 'herdr', 'print'] as const;
 export type Workbench = (typeof WORKBENCHES)[number];
 export const AGENT_CLIS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 export type AgentCli = (typeof AGENT_CLIS)[number];
@@ -70,9 +70,12 @@ export interface LaunchInput {
   env: Record<string, string | undefined>;
 }
 
-/** One thing to do. A `run`'s argv may hold `{prev}`, the trimmed output of the last `run` that captured. */
+/**
+ * One thing to do. A `run`'s argv may hold `{prev}`, the trimmed output of the last `run` that
+ * captured: its last line, or with `pick`, the field at that dotted path of its JSON output.
+ */
 export type Step =
-  | { kind: 'run'; argv: string[]; capture?: boolean }
+  | { kind: 'run'; argv: string[]; capture?: boolean; pick?: string }
   | { kind: 'write'; file: string; text: string }
   | { kind: 'open'; url: string }
   | { kind: 'say'; text: string };
@@ -295,6 +298,24 @@ export function launchPlan(bench: Workbench, input: LaunchInput): Step[] {
       steps.push({ kind: 'run', argv });
       break;
     }
+    case 'herdr': {
+      // A herdr workspace named for the room, a pane each, and in it the agent herdr itself starts,
+      // so herdr knows it as an agent (its state, focus, prompts). Each agent is named
+      // `crossroom-<room>-<letter>` in lowercase, which is how a desktop bar finds a seat's agent again.
+      const [first, ...rest] = panes;
+      // herdr takes agent names of lowercase letters, digits, - and _, at most 32: room ids are mixed case.
+      const agentName = (letter: string) => `${name}-${letter}`.toLowerCase();
+      const start = (p: (typeof panes)[number]) =>
+        steps.push({ kind: 'run', argv: ['herdr', 'agent', 'start', agentName(p.seat.letter), '--kind', p.seat.agent, '--pane', '{prev}', '--', ...p.argv.slice(1)] });
+      steps.push({ kind: 'run', argv: ['herdr', 'workspace', 'create', '--cwd', first!.dir, '--label', name, '--focus'], capture: true, pick: 'result.root_pane.pane_id' });
+      start(first!);
+      rest.forEach((p, i) => {
+        steps.push({ kind: 'run', argv: ['herdr', 'pane', 'split', '{prev}', '--direction', i % 2 === 0 ? 'right' : 'down', '--cwd', p.dir], capture: true, pick: 'result.pane.pane_id' });
+        start(p);
+      });
+      if (watch) steps.push({ kind: 'say', text: `Follow the room in any herdr pane: ${shellLine(watch, platform)}` });
+      break;
+    }
     case 'orca':
       for (const p of panes) steps.push({ kind: 'run', argv: ['orca', 'agent', 'launch', '--agent', WORKBENCH_AGENT[p.seat.agent], '--prompt', seatPrompt(p.seat.seatUrl), '--json'] });
       if (watch) steps.push({ kind: 'say', text: `Follow the room in any Orca terminal: ${shellLine(watch, platform)}` });
@@ -331,6 +352,8 @@ export function launchPlan(bench: Workbench, input: LaunchInput): Step[] {
 
 /** The workbench this terminal belongs to, or `print` where Crossroom can start no pane. */
 export function workbenchOf(env: Record<string, string | undefined>, has: (bin: string) => boolean, platform: NodeJS.Platform): Workbench {
+  // herdr (Omarchy's agent workspace) marks each of its panes, whatever terminal shows it.
+  if (env.HERDR_PANE_ID && has('herdr')) return 'herdr';
   if (env.ORCA_PANE_KEY && has('orca')) return 'orca';
   if (env.TMUX && has('tmux')) return 'tmux';
   if (env.WEZTERM_PANE && has('wezterm')) return 'wezterm';
@@ -373,6 +396,21 @@ const realRunner: Runner = {
   say: (l) => console.log(l),
 };
 
+/**
+ * The field at a dotted path of a command's JSON output, as text; empty when the output is not
+ * JSON or holds no such field, which the next step then fails on with the workbench's own error.
+ */
+export function picked(out: string, field: string): string {
+  let v: unknown;
+  try {
+    v = JSON.parse(out);
+  } catch {
+    return '';
+  }
+  for (const k of field.split('.')) v = v && typeof v === 'object' ? (v as Record<string, unknown>)[k] : undefined;
+  return typeof v === 'string' || typeof v === 'number' ? String(v) : '';
+}
+
 /** Do a plan, step by step; the first that fails stops it, and says how. */
 export function runPlan(steps: Step[], platform: NodeJS.Platform, r: Runner = realRunner): void {
   let prev = '';
@@ -383,7 +421,7 @@ export function runPlan(steps: Step[], platform: NodeJS.Platform, r: Runner = re
       const argv = s.kind === 'open' ? openUrl(s.url, platform) : s.argv.map((a) => a.replaceAll('{prev}', prev));
       const res = r.run(argv);
       if (!res.ok) throw new Usage(`${argv.slice(0, 3).join(' ')} failed: ${(res.err || res.out).trim().split('\n')[0] || 'no reason given'}. Try --in print.`);
-      if (s.kind === 'run' && s.capture) prev = res.out.trim().split('\n').pop()?.trim() ?? '';
+      if (s.kind === 'run' && s.capture) prev = s.pick ? picked(res.out, s.pick) : (res.out.trim().split('\n').pop()?.trim() ?? '');
     }
   }
 }
@@ -458,9 +496,9 @@ registerCommand({
   topic: 'start',
   synopsis: 'crossroom launch <seat link>...',
   usage: 'crossroom launch <seat link>... | -',
-  summary: 'agents into seats, a pane each: tmux, WezTerm, kitty, Warp, Windows Terminal, Orca or Paseo',
+  summary: 'agents into seats, a pane each: tmux, WezTerm, kitty, Warp, Windows Terminal, Orca, Paseo or herdr',
   more: [
-    { usage: '[--with claude|codex|gemini|opencode[,…]] [--in auto|tmux|wezterm|kitty|warp|wt|orca|paseo|print]' },
+    { usage: '[--with claude|codex|gemini|opencode[,…]] [--in auto|tmux|wezterm|kitty|warp|wt|orca|paseo|herdr|print]' },
     { usage: '[--resume claude:<id>[,…]]', summary: 'reopen sessions already on this computer in the first seats (crossroom sessions lists them)' },
     { usage: '[--dir <dir>] [--dry-run]', summary: 'where the agents start; print the commands instead of running them' },
   ],

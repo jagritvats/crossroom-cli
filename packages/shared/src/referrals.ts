@@ -5,7 +5,8 @@
  * - `signup`: the friend's new account claims the referral;
  * - `first_room`: the friend's first room ends with at least two agents having joined it, among the
  *   rooms the friend's account keeps;
- * - `first_plan`: a workspace the friend made is first on a paid plan.
+ * - `first_plan`: a workspace the friend made is first on a paid plan, when it starts or, where the
+ *   programme says so, once it renews (the first real charge after a free first period).
  *
  * A reward is credit for Crossroom's agent (a grant, as the operator's offers make), a plan for some
  * days (a plan grant on the person's personal workspace), or a promotional price at their next
@@ -45,7 +46,16 @@ export interface ReferralProgramme {
    * not given (`capped`). The instance's whole exposure to referral credit. 0 gives no credit.
    */
   creditBudgetUsd: number;
+  /**
+   * When a friend's paid plan counts: `start`, once the subscription is live; `renewal`, once it has
+   * renewed and is still active. A first period the promotional price made free charges nothing, so
+   * `renewal` rewards only plans someone has paid for.
+   */
+  paidPlanWhen: ReferralPaidPlanWhen;
 }
+
+export const REFERRAL_PAID_PLAN_WHEN = ['start', 'renewal'] as const;
+export type ReferralPaidPlanWhen = (typeof REFERRAL_PAID_PLAN_WHEN)[number];
 
 export const REFERRAL_LIMITS = {
   creditUsdMax: 50,
@@ -56,17 +66,22 @@ export const REFERRAL_LIMITS = {
   creditBudgetUsdMax: 100_000,
 } as const;
 
-/** What an instance offers until its operator says otherwise. */
+/**
+ * What an instance offers until its operator says otherwise: the friend gets the promotional price on
+ * their first plan, and the person who invited gets credit only once that plan is paid for. Nothing is
+ * given for a signup or a room alone.
+ */
 export const REFERRAL_DEFAULTS: ReferralProgramme = {
   on: true,
   rewards: {
-    signup: { referrer: [], referee: [{ kind: 'credit', usd: 5, days: 30 }, { kind: 'discount' }] },
-    first_room: { referrer: [{ kind: 'credit', usd: 5, days: 30 }], referee: [] },
-    first_plan: { referrer: [{ kind: 'plan', plan: 'starter', days: 30 }], referee: [] },
+    signup: { referrer: [], referee: [{ kind: 'discount' }] },
+    first_room: { referrer: [], referee: [] },
+    first_plan: { referrer: [{ kind: 'credit', usd: 5, days: 30 }], referee: [] },
   },
   maxPerReferrer: 20,
   joinWindowDays: 7,
   creditBudgetUsd: 100,
+  paidPlanWhen: 'start',
 };
 
 /** A referral code: eight letters and digits, with none that read alike (no 0, O, 1, I, L). */
@@ -99,6 +114,10 @@ export const MILESTONE_WORDS: Readonly<Record<ReferralMilestone, string>> = {
   first_plan: 'starts their first paid plan',
 };
 
+/** The words for a moment, with the paid plan said as the programme counts it. */
+export const milestoneWords = (m: ReferralMilestone, when: ReferralPaidPlanWhen = 'start'): string =>
+  m === 'first_plan' && when === 'renewal' ? 'pays for a second month of their first plan' : MILESTONE_WORDS[m];
+
 // ---------------------------------------------------------------- the programme, checked
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -130,7 +149,7 @@ function parseReward(v: unknown, where: string): ReferralReward | string {
 /** The operator's programme, checked whole; a sentence saying what is wrong otherwise. */
 export function parseReferralProgramme(body: unknown): ReferralProgramme | string {
   if (!isObject(body)) return 'expected a programme';
-  const extra = Object.keys(body).filter((k) => !['on', 'rewards', 'maxPerReferrer', 'joinWindowDays', 'creditBudgetUsd'].includes(k));
+  const extra = Object.keys(body).filter((k) => !['on', 'rewards', 'maxPerReferrer', 'joinWindowDays', 'creditBudgetUsd', 'paidPlanWhen'].includes(k));
   if (extra.length) return `unexpected ${extra.join(', ')}`;
   if (typeof body.on !== 'boolean') return 'on: true or false';
   const L = REFERRAL_LIMITS;
@@ -138,6 +157,9 @@ export function parseReferralProgramme(body: unknown): ReferralProgramme | strin
   if (!wholeIn(body.joinWindowDays, 1, L.joinWindowDaysMax)) return `joinWindowDays: a whole number from 1 to ${L.joinWindowDaysMax}`;
   if (!cents(body.creditBudgetUsd) || body.creditBudgetUsd < 0 || body.creditBudgetUsd > L.creditBudgetUsdMax)
     return `creditBudgetUsd: from 0 to ${L.creditBudgetUsdMax}`;
+  // A programme saved before `paidPlanWhen` existed reads as `start`, which is how it behaved.
+  const paidPlanWhen = body.paidPlanWhen ?? 'start';
+  if (paidPlanWhen !== 'start' && paidPlanWhen !== 'renewal') return 'paidPlanWhen: start or renewal';
   if (!isObject(body.rewards)) return 'rewards: one entry per moment';
   const unknownMoment = Object.keys(body.rewards).find((k) => !(REFERRAL_MILESTONES as readonly string[]).includes(k));
   if (unknownMoment) return `rewards: unexpected ${unknownMoment}`;
@@ -161,7 +183,14 @@ export function parseReferralProgramme(body: unknown): ReferralProgramme | strin
       }
     }
   }
-  return { on: body.on, rewards, maxPerReferrer: body.maxPerReferrer, joinWindowDays: body.joinWindowDays, creditBudgetUsd: body.creditBudgetUsd };
+  return {
+    on: body.on,
+    rewards,
+    maxPerReferrer: body.maxPerReferrer,
+    joinWindowDays: body.joinWindowDays,
+    creditBudgetUsd: body.creditBudgetUsd,
+    paidPlanWhen,
+  };
 }
 
 // ---------------------------------------------------------------- views
@@ -188,6 +217,7 @@ export interface ReferralRewardView {
 export interface ReferralOffer {
   rewards: ReferralProgramme['rewards'];
   joinWindowDays: number;
+  paidPlanWhen: ReferralPaidPlanWhen;
 }
 
 /** `GET /api/account/referral`. */
@@ -239,6 +269,8 @@ export interface AdminReferralView {
   houseOn: boolean;
   /** Whether a promotional price is configured with the payment provider, so a discount reward means anything. */
   discountConfigured: boolean;
+  /** The instance's payment provider, or null where billing isn't set up: Polar's checkout may not ask for a card at a zero total. */
+  provider: 'stripe' | 'polar' | null;
   totals: { codes: number; referrals: number } & Record<ReferralMilestone, number>;
   /** `creditUsd` is what given and waiting credit rewards add up to: what counts against the budget. */
   rewards: { given: number; used: number; waiting: number; capped: number; creditUsd: number };

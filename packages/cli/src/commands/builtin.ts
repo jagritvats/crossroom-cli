@@ -22,6 +22,7 @@ import {
   roomsText,
   seatStatusText,
   seatsText,
+  sessionSeats,
   shareRoom,
   text,
   Usage,
@@ -105,9 +106,21 @@ registerCommand({
       usage: '[--keep]',
       summary: 'put the rooms kept here into your account on their instance (new ones go there when signed in)',
     },
+    {
+      usage: '[--watch] [--interval <s>]',
+      summary: 'keep reading them and print again when one changes or needs you (a desktop bar reads --watch --json)',
+    },
   ],
-  switches: ['keep', 'no-keep'],
+  switches: ['keep', 'no-keep', 'watch'],
   async run(args) {
+    if (args.flags.watch === true) {
+      const { intervalOf, watchRooms } = await import('./rooms-watch.js');
+      const stop = new AbortController();
+      process.once('SIGTERM', () => stop.abort());
+      process.once('SIGINT', () => stop.abort());
+      await watchRooms({ json: args.flags.json === true, intervalS: intervalOf(args.flags.interval), signal: stop.signal });
+      return 0;
+    }
     if (args.flags.keep === true) {
       // Loaded here: its imports register `runner`, which must keep its place in the help.
       const { keepSaved } = await import('./keep-in-account.js');
@@ -225,7 +238,21 @@ registerCommand({
   usage: 'crossroom seats [--json]',
   summary: 'the seats this machine took and whether their rooms are live, likeliest to resume first',
   order: 100,
+  more: [{ usage: '[--open <key>]', summary: "open that seat's own page in the browser (the key crossroom rooms --watch prints)" }],
   async run(args) {
+    if (args.flags.open !== undefined) {
+      const key = text(args.flags.open);
+      if (!key) throw new Usage('--open takes the key of a seat, as `crossroom rooms --watch --json` prints it.');
+      const { seatByKey, seatPageOf } = await import('./rooms-watch.js');
+      const s = seatByKey(sessionSeats(), key);
+      if (!s) throw new Usage('No seat on this machine has that key. `crossroom rooms --watch --json` lists them.');
+      const page = seatPageOf(s.seat);
+      if (!page) throw new Usage("That seat's room is end to end: its page can't read it. Your agent's session has it.");
+      // The page carries the seat's token, so it is opened, never printed.
+      openBrowser(page);
+      console.log("Opening the seat's page in your browser.");
+      return 0;
+    }
     const rows = await knownSeats();
     console.log(args.flags.json ? JSON.stringify(rows, null, 2) : seatsText(rows));
     return 0;
