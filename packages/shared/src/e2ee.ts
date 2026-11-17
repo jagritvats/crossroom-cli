@@ -200,6 +200,10 @@ export const E2EE_FIELDS = {
     work: {},
     submit: {},
     report: {},
+    // A project room's plan (project rooms with a lead only): never offered in an end-to-end room,
+    // and its items' text is refused there (`E2EE_REFUSED`), since it would be stored in the clear.
+    plan: {},
+    progress: {},
     // The room board. A room with a board is never end-to-end (its create refuses
     // `board`), so nothing here is encrypted, and their arguments are refused (`E2EE_REFUSED`).
     board: {},
@@ -285,6 +289,8 @@ export const E2EE_REFUSED = {
   // A submission's text and a report's note would be stored in the clear in the project's record.
   submit: ['body', 'title'],
   report: ['note'],
+  // A plan's items (titles, briefs, criteria) would be stored in the clear in the project's work.
+  plan: ['items'],
   // The board's keys and values would be stored in the clear.
   board: ['key'],
   board_set: ['key', 'value'],

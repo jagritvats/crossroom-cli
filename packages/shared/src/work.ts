@@ -666,11 +666,13 @@ export const NOT_LINKED = 'This room is not linked to project work, so there is 
 export const SubmitOpArgs = {
   body: z.string().max(SEAT_SUBMIT_MAX),
 };
-/** `report(state, note?)`, as a tool schema's raw shape. */
+/** `report(state, note?, item?)`, as a tool schema's raw shape. */
 export const ReportOpArgs = {
   state: z.enum(SEAT_REPORT_STATES),
   /** Longer than `SEAT_NOTE_MAX` is cut by the operation, not refused: the schema stays short. */
   note: z.string().optional(),
+  /** An item planned in this room (`P2`, or its work id), in a room with a plan; absent means the item the room was opened for. */
+  item: z.string().max(100).optional(),
 };
 
 /** `OpData.work`: the object this room was opened for. Participant text throughout: fence it. */
@@ -703,6 +705,84 @@ export interface ReportOpData {
   changed: boolean;
   /** Set when the item went through another state to get there. */
   via: WorkState | null;
+  /** The planned item reported on (`P2`), when the call named one. */
+  item?: string;
+}
+
+// ---------------------------------------------------------------- a room's plan
+
+/**
+ * A project room's plan (ops/plan.ts): the lead seat puts it into the project's work items with
+ * `plan`, each assigned to a seat of the room; every seat reads where each stands with `progress`
+ * and reports on its own with `report item=`. A planned item starts proposed, as every seat's text
+ * does: a person accepts the plan into work (`POST /api/sessions/:id/plan/accept`).
+ */
+/** The most items one `plan` call takes. */
+export const PLAN_ITEMS_MAX = 12;
+/** The most items one room's plan holds. */
+export const ROOM_PLAN_MAX = 24;
+/** How many times one seat may call `plan` in one room. */
+export const SEAT_PLANS_MAX = 3;
+/** The longest brief a planned item carries from a seat. */
+export const PLAN_BRIEF_MAX = 4000;
+/** A planned item's short name in its room: `P` and its number. */
+export const PLAN_LABEL = /^[Pp]([1-9][0-9]?)$/;
+export const planLabel = (n: number) => `P${n}`;
+
+/** One item of a `plan` call. Kept bare: it is in the tool list of every seat of a room with a lead. */
+export const PlanItemArg = z.object({
+  title: z.string(),
+  brief: z.string().optional(),
+  criteria: z.array(z.string()).optional(),
+  /** A seat of this room, by letter or name. */
+  assignee: z.string().optional(),
+});
+export type PlanItemArg = z.infer<typeof PlanItemArg>;
+/** `plan(items)`, as a tool schema's raw shape. */
+export const PlanOpArgs = {
+  items: z.array(PlanItemArg).min(1).max(PLAN_ITEMS_MAX),
+};
+
+/** A planned item as a seat or the owner reads it. `title` and `note` are participant text: fence them. */
+export interface PlanItemView {
+  /** `P1`, `P2`... in this room. */
+  label: string;
+  workId: string;
+  title: string;
+  state: WorkState;
+  /** The seat of this room the item is assigned to, or null for none (or someone outside the room). */
+  assignee: { slot: number; letter: string; name: string } | null;
+  /** The latest note a report (or a person's move) left on the item, or null. */
+  note: string | null;
+}
+/** `OpData.plan`. */
+export interface PlanOpData {
+  planned: PlanItemView[];
+  /** Items this room's plan holds now, these included. */
+  total: number;
+}
+/** `OpData.progress`. */
+export interface ProgressOpData {
+  items: PlanItemView[];
+  /** This seat's letter, and whether it leads. */
+  me: string;
+  lead: boolean;
+}
+
+/** `GET /api/sessions/:id/plan`: the room's plan as its owner reads it. */
+export interface RoomPlanResult {
+  items: PlanItemView[];
+  /** How many are still only proposed: what "Accept the plan" would accept. */
+  proposed: number;
+}
+/** `POST /api/sessions/:id/plan/accept`: absent `ids` means every proposed item of this room's plan. */
+export const AcceptPlanInput = z
+  .object({ ids: z.array(z.string().max(100)).min(1).max(ROOM_PLAN_MAX).optional() })
+  .strict();
+export type AcceptPlanInput = z.infer<typeof AcceptPlanInput>;
+export interface AcceptPlanResult extends RoomPlanResult {
+  /** The work ids this call accepted. */
+  accepted: string[];
 }
 
 /** `POST /api/projects/:p/meetings` */

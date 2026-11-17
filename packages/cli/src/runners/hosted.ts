@@ -10,8 +10,10 @@
 import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import path from 'node:path';
-import type { HostedRunner, ParleyEvent, Participant } from '@parley/shared';
+import type { CliRunner, HostedRunner, ParleyEvent, Participant } from '@parley/shared';
 import { slotLetter } from '@parley/shared';
+import type { SpendGate } from '@parley/shared/house';
+import type { ApiClientFactory, ApiEffort } from './api.js';
 import { forOthersOnly } from '@parley/shared/mentions';
 import { oneLine } from '@parley/shared/text';
 import { TOOL_NAMES } from '../tool-names.js';
@@ -163,7 +165,7 @@ export interface RunnerAvailability {
  * `RunnerManager.available()` answers, and what `crossroom doctor` prints.
  */
 export function runnerAvailability(opts: RunnerOptions = {}): RunnerAvailability[] {
-  return (Object.keys(ADAPTERS) as HostedRunner[]).map((id) => {
+  const clis = (Object.keys(ADAPTERS) as CliRunner[]).map((id): RunnerAvailability => {
     const a = opts.adapters?.[id] ?? ADAPTERS[id];
     const p = (opts.resolveBin ?? resolveBin)(a.bin);
     let note = p ? 'installed' : `"${a.bin}" not found on PATH`;
@@ -174,7 +176,15 @@ export function runnerAvailability(opts: RunnerOptions = {}): RunnerAvailability
     const available = !!p && !a.hostedBlocked;
     return { id, label: a.label, name: a.label, available, blocked: !!a.hostedBlocked, path: p, note, reason: available ? undefined : note };
   });
+  // Crossroom's own agent: a loop on the Anthropic API, with no executable to find. It runs where
+  // the operator gave this process a key.
+  const api = !!opts.apiKey;
+  const apiNote = api ? 'runs on the Anthropic API' : 'runs on the Anthropic API once this Crossroom is given an API key';
+  return [...clis, { id: 'api', label: API_LABEL, name: API_LABEL, available: api, blocked: false, path: null, note: apiNote, reason: api ? undefined : apiNote }];
 }
+
+/** What `api` seats are called where a runner is named. */
+export const API_LABEL = "Crossroom's agent";
 
 /** What a test (or the server's entry point) may change about how runners behave. */
 export interface RunnerOptions {
@@ -183,9 +193,19 @@ export interface RunnerOptions {
   /** POSIX: time between SIGTERM and SIGKILL for a CLI's process group. */
   killGraceMs?: number;
   /** Adapters to use instead of the real CLIs, by runner id. */
-  adapters?: Partial<Record<HostedRunner, Adapter>>;
+  adapters?: Partial<Record<CliRunner, Adapter>>;
   /** Where a runner's executable is; defaults to a PATH search. */
   resolveBin?: (bin: string) => string | null;
+  /** The Anthropic API key `api` seats run on. Without one, `api` seats are not offered. */
+  apiKey?: string;
+  /** Whether `api` seats may use Anthropic's web search tool. On unless false. */
+  webSearch?: boolean;
+  /** `api` seats' effort (`output_config.effort`); `HOUSE_EFFORT` unless set. */
+  effort?: ApiEffort;
+  /** The spend gate for one `api` seat, asked before every model request; `UNMETERED` without one. */
+  spendFor?: (p: Participant) => SpendGate;
+  /** Makes the Anthropic client for `api` seats, in place of the SDK's: for tests. */
+  createClient?: ApiClientFactory;
 }
 
 const isThenable = (v: unknown): v is PromiseLike<unknown> => typeof (v as PromiseLike<unknown> | null)?.then === 'function';

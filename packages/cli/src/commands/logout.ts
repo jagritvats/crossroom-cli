@@ -27,6 +27,7 @@ export async function logout(args: Args, fetchImpl: typeof fetch = (input, init)
     const res = await fetchImpl(`${relay}/api/auth/logout`, {
       method: 'POST',
       headers: { accept: 'application/json', authorization: `Bearer ${held.token}` },
+      redirect: 'error',
       signal: AbortSignal.timeout(15_000),
     });
     revoked = res.ok;

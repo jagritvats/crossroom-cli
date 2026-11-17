@@ -70,6 +70,21 @@ export interface SpendWeek {
   tokensOut: number;
 }
 
+/**
+ * What Crossroom's own agent spent of the workspace's credit in one week, by the week each of its seats
+ * was seated (house/, directory step 37): rooms it sat in, its cost in dollars, its model calls,
+ * tokens in (cached included) and out, and its web searches. A deleted room's seats drop out: the
+ * credit's own totals still count what they spent. Owners, admins and auditors only.
+ */
+export interface HouseSpendWeek {
+  rooms: number;
+  costUsd: number;
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  searches: number;
+}
+
 /** An ask from one team's project to another team's standing seat, counted. Sorted by `(from, to)`, never by `rooms`. */
 export interface TeamEdge {
   from: string;
@@ -91,6 +106,8 @@ export interface OrgAnalytics {
   outcomes?: Record<string, OutcomeWeek>;
   /** Its standing seats' cost, keyed by week: owners, admins and auditors only, absent for anyone else. */
   spend?: Record<string, SpendWeek>;
+  /** What Crossroom's agent spent of the workspace's credit, keyed by week: with `spend`, and only where the instance offers it. */
+  houseSpend?: Record<string, HouseSpendWeek>;
 }
 /** `GET /api/teams/:t/analytics`. `filesCited` only for the team's own members, since it opens sealed sources. */
 export interface TeamAnalytics {

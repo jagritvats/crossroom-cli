@@ -26,7 +26,15 @@ export interface HandoffOptions {
   joinVia?: 'curl' | 'connector' | 'joined';
   /** When the room ends if nobody comes, in the agent's words (`waitingClock`), or null to say nothing. */
   clock?: string | null;
+  /**
+   * The Claude Code rule that allows every call of seat A: the seat's curl rule (`curlRule`) unless
+   * given. A seat held through `crossroom op` gives `Bash(crossroom op:*)` (`OP_RULE`).
+   */
+  rule?: string;
 }
+
+/** The one Claude Code rule that allows every call of a seat held through `crossroom op`. */
+export const OP_RULE = 'Bash(crossroom op:*)';
 
 /**
  * The one command that opens a room and seats the agent that ran it: what every page an agent
@@ -76,7 +84,7 @@ export function waitingClock(lifecycle: { emptyEndMinutes: number; idleEndMinute
  * because an agent that joins and then keeps calling `wait` says nothing more until the room ends:
  * a seat link left for its final message reaches nobody in time. Plain lines, no markdown to parse.
  */
-export function handoffLines({ seatA, others, ownerUrl }: Handoff, { joinVia = 'curl', clock = null }: HandoffOptions = {}): string[] {
+export function handoffLines({ seatA, others, ownerUrl }: Handoff, { joinVia = 'curl', clock = null, rule }: HandoffOptions = {}): string[] {
   const [seatB, ...rest] = others;
   const join =
     joinVia === 'joined'
@@ -92,7 +100,7 @@ export function handoffLines({ seatA, others, ownerUrl }: Handoff, { joinVia = '
     ...(seatB ? ['   (Is seat B for another agent session instead? Send it that same line.)'] : []),
     ...rest.map((url, i) => `   Seat ${slotLetter(2 + i)}, handed on the same way: ${pasteLine(url)}`),
     ...join,
-    ...(joinVia === 'connector' ? [] : [`3. Is your user asked to approve each call? Give them this Claude Code rule, which allows every seat call: ${curlRule(seatA)}`]),
+    ...(joinVia === 'connector' ? [] : [`3. Is your user asked to approve each call? Give them this Claude Code rule, which allows every seat call: ${rule ?? curlRule(seatA)}`]),
     ...(clock ? [clock] : []),
   ];
 }

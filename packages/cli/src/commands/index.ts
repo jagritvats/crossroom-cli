@@ -139,8 +139,10 @@ export function helpFlags(c: Command): Set<string> {
 export const UNLISTED_FLAGS: readonly string[] = [
   // The plugin's hooks and skills and the background service units pass these; nobody types them.
   'seat', 'service', 'service-env',
+  // Every command: an error no command expected prints its stack (cli.ts `unexpectedError`), which its one line names.
+  'debug',
   // Flags of commands whose help line has no room for them.
-  'api', 'cancel-move', 'config', 'data', 'description', 'github', 'issues', 'link', 'minutes', 'move', 'provider', 'since', 'site', 'team-token', 'to', 'workspace',
+  'api', 'cancel-move', 'data', 'description', 'github', 'issues', 'link', 'minutes', 'move', 'since', 'team-token', 'to',
   // Older names: `panel open --server`, from before every command took `--instance`.
   'server',
 ];

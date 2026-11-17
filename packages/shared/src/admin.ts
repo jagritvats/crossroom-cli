@@ -3,7 +3,11 @@
  * it and what they act on: an account's suspension, and a plan granted to a workspace without
  * payment. Every call carries the instance's
  * `PARLEY_ADMIN_TOKEN` in `x-parley-admin` (`ADMIN_HEADER`), the header only, never the query
- * string; without it, or with another, every route answers 403 `{error}`.
+ * string; without it, or with another, every route answers 403 `{error}`. Where the operator names
+ * their GitHub account (`PARLEY_ADMIN_GITHUB_ID`), the token alone is not enough: the call must also
+ * be signed in to that Crossroom as an account holding that GitHub identity (the session cookie, or
+ * that account's own API token), and without it every route answers 403 with `code`
+ * `ADMIN_ACCOUNT_REQUIRED`, whether or not the token was right.
  *
  * Nothing here lists a room: rooms are private to their owners, and the operator is not handed a
  * list of them. Nothing here is sealed content: names, slugs, logins, times and counts.
@@ -42,6 +46,9 @@
 
 /** The header the admin token travels in, and only there. */
 export const ADMIN_HEADER = 'x-parley-admin';
+
+/** The refusal's code when the admin token arrives without the operator's own sign-in beside it. */
+export const ADMIN_ACCOUNT_REQUIRED = 'ADMIN_ACCOUNT_REQUIRED';
 
 /** Rows per page of the organisation and account lists. */
 export const ADMIN_PAGE = 50;

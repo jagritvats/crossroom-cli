@@ -21,7 +21,11 @@
  *    holds (an account's own agents), which carries the account and the call instead: the relay
  *    said at the seat's last grants' sync that the account holds a live grant to it
  *    (`GrantBook.checkCall`; a call naming an account the book lacks syncs the seat's grants once
- *    first, so a grant made since the runner started counts). (`grant_refused`)
+ *    first, so a grant made since the runner started counts). (`grant_refused`) Or, for Crossroom's
+ *    own agent seated by a room's owner (a house job, which carries the paying workspace instead):
+ *    the seat's runtime is `api`, and, once the seat page is read (8), the relay's ledger says the seat
+ *    holds a live reservation of that workspace's credit (`houseSpend`), so the runner never works for
+ *    a workspace that has none. (`grant_refused`)
  * 5. The job id is new here, and so is its seat of its room. (`replayed_job`, `replayed_seat`)
  * 6. It was issued within the last 24 hours and no more than 5 minutes ahead of this clock.
  *    (`stale`, `future`)
@@ -104,6 +108,8 @@ export interface DispatchSeat {
   askLinks?: boolean;
   /** The grants this seat answers through across a connection (runner.yml `connections`). None: it takes no such job. */
   connections?: readonly SeatConnectionGrant[];
+  /** The seat's runtime (runner.yml). Only an `api` seat takes a house job. */
+  runtime?: string;
 }
 
 /** A job that passed: what the host needs to start its agent. The seat token goes to the egress proxy only. */
@@ -160,6 +166,12 @@ export interface DispatchContext {
    * most once per job; a failure leaves the book as it was, and the call is refused.
    */
   refreshGrants?: (label: string) => Promise<void>;
+  /**
+   * The relay's ledger for a house job's seat (`RelayClient.spend` with `look`): whether it holds a
+   * live reservation of its workspace's credit, or runs where nothing is metered. Absent: every house
+   * job is refused (`grant_refused`).
+   */
+  houseSpend?: (jobId: string) => Promise<{ open: boolean; metered: boolean }>;
   now?: () => number;
 }
 
@@ -182,7 +194,7 @@ type Payload = ReturnType<typeof openJob>;
 function seatAndAsk(
   store: RunnerStore,
   seats: DispatchContext['seats'],
-  p: Pick<Payload, 'seatId' | 'ask' | 'connection' | 'grant' | 'call'>,
+  p: Pick<Payload, 'seatId' | 'ask' | 'connection' | 'grant' | 'call' | 'house'>,
   grants?: GrantBook,
   room?: DispatchRoom | null,
 ): { seat: SeatRow; conf: DispatchSeat; hash: string; principal: string | null } | DispatchRefusal {
@@ -193,6 +205,11 @@ function seatAndAsk(
   if (p.connection) {
     // The grant and the epoch here; its limits against this runner's own count in check 7.
     if (checkConnectionJob({ ...p.connection, limits: {} }, conf.connections, { today: 0, live: 0 }) === 'grant_refused') return 'grant_refused';
+    return { seat, conf, hash: '', principal: null };
+  }
+  if (p.house) {
+    // Crossroom's own agent: only on an `api` seat; the ledger is asked once the seat page is read.
+    if (conf.runtime !== 'api') return 'grant_refused';
     return { seat, conf, hash: '', principal: null };
   }
   if (p.call) {
@@ -340,6 +357,24 @@ export async function checkDispatch(leased: LeasedJob, ctx: DispatchContext): Pr
   if (p.grant && typeof seatAndAsk(store, ctx.seats, p, ctx.grants, page.dispatchRoom) === 'string') {
     store.refuseJob(leased.id, 'grant_refused');
     return refuse('grant_refused');
+  }
+  // A house job: the relay that made the seat must also hold a live reservation of the paying
+  // workspace's credit for it, or this runner would work for a workspace with none.
+  if (p.house) {
+    let spend: { open: boolean; metered: boolean } | null = null;
+    try {
+      spend = ctx.houseSpend ? await ctx.houseSpend(leased.id) : null;
+    } catch (e) {
+      if (e instanceof RelayError && (e.transient || e.kind === 'aborted')) {
+        store.releaseJob(leased.id);
+        return { ok: false, retry: true, why: redactTokens(e.message, [p.seatToken]) };
+      }
+      spend = null;
+    }
+    if (!spend || !spend.open) {
+      store.refuseJob(leased.id, 'grant_refused');
+      return refuse('grant_refused');
+    }
   }
   // 3 and 4 again, in the transaction that accepts: the seat page took a while to read.
   const late = store.tx((): DispatchRefusal | null => {

@@ -15,6 +15,11 @@ export interface DocsPageMeta {
   /** The page's address is `/docs/<slug>`; the first page is also `/docs` itself. */
   readonly slug: string;
   readonly title: string;
+  /**
+   * The page's name in a search result and the browser tab, where the sidebar's short name
+   * ("Rooms", "Install the CLI") doesn't say what it is to someone arriving from a search.
+   */
+  readonly searchTitle?: string;
   /** One sentence: the preview's description and the line under the title in search results. */
   readonly description: string;
   /** Words a reader might search for that the title doesn't hold. */
@@ -35,12 +40,14 @@ export const DOCS_GROUPS: readonly DocsGroup[] = [
       {
         slug: 'introduction',
         title: 'Introduction',
+        searchTitle: 'What is Crossroom? A room for your AI agents to collaborate',
         description: 'What Crossroom is, what a room is for, and how the pieces fit together.',
         keywords: 'overview what is',
       },
       {
         slug: 'quickstart',
         title: 'Quickstart',
+        searchTitle: 'Crossroom quickstart: your first room of AI agents',
         description: 'Open a room, bring two of your agents in and read the recap, in about five minutes.',
         keywords: 'first room tutorial start',
       },
@@ -155,18 +162,21 @@ export const DOCS_GROUPS: readonly DocsGroup[] = [
       {
         slug: 'install',
         title: 'Install the CLI',
+        searchTitle: 'Install the Crossroom CLI',
         description: 'Optional: the crossroom command, for opening rooms from a terminal, running Crossroom on your own machine and keeping agents on call.',
         keywords: 'npm npx node setup doctor',
       },
       {
         slug: 'plugin',
         title: 'The Claude Code and Codex plugin',
+        searchTitle: 'Crossroom plugin for Claude Code and Codex',
         description: 'Slash commands that open, join, resume and leave rooms, and keep a session in its room.',
         keywords: 'plugin slash command skill hook stop hook resume',
       },
       {
         slug: 'terminals',
         title: 'Agents in your terminal',
+        searchTitle: 'Crossroom CLI: AI agents in your terminal panes',
         description: 'Seat agents in tmux, WezTerm, kitty, Warp, Orca or Paseo with one command, bring in a session you already have, and see in the terminal when a room needs you.',
         keywords: 'launch sessions resume warp orca paseo tmux wezterm kitty panes workbench watch notifications osc 7501',
       },
@@ -179,42 +189,49 @@ export const DOCS_GROUPS: readonly DocsGroup[] = [
       {
         slug: 'cli',
         title: 'CLI overview',
+        searchTitle: 'Crossroom CLI overview',
         description: 'How the crossroom command is organised, where it keeps its data, and the conventions every command follows.',
         keywords: 'command line help data directory',
       },
       {
         slug: 'cli-rooms',
         title: 'Rooms',
+        searchTitle: 'Crossroom CLI: room commands',
         description: 'serve, new, launch, sessions, ask, rooms, open, watch, end, share, minutes, verify, memory and panel.',
         keywords: 'serve new launch sessions resume ask rooms open watch end share minutes verify memory panel',
       },
       {
         slug: 'cli-seats',
         title: 'Seats',
+        searchTitle: 'Crossroom CLI: seat commands',
         description: 'seat, seats, status, leave, join and op: taking part in a room from a terminal.',
         keywords: 'seat seats status leave join op',
       },
       {
         slug: 'cli-agents',
         title: 'Agents and runners',
+        searchTitle: 'Crossroom CLI: agents and runners',
         description: 'login, agents, call, runner and background: your agents, and the machine that runs them.',
         keywords: 'login logout agents call runner background service',
       },
       {
         slug: 'cli-lanes',
         title: 'Lanes',
+        searchTitle: 'Crossroom CLI: lane commands',
         description: 'lane open, add, pass, schedule, mirror, notify and ci.',
         keywords: 'lane mirror notify schedule',
       },
       {
         slug: 'cli-workspace',
         title: 'Organisations and projects',
+        searchTitle: 'Crossroom CLI: organisations and projects',
         description: 'org, work, artifact, project and conformance.',
         keywords: 'org work artifact project conformance',
       },
       {
         slug: 'cli-system',
         title: 'Diagnostics',
+        searchTitle: 'Crossroom CLI: diagnostics and environment',
         description: 'doctor, stop, help, and the environment variables the command reads.',
         keywords: 'doctor stop help environment',
       },

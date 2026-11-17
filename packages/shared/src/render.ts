@@ -20,7 +20,7 @@ import { RECORD_OUTPUT_MAX, type RecordData, type RecordEntry } from './record.j
 import { lettersText, mentionsOf } from './mentions.js';
 import { CARD_SOURCE_MAX, CARD_TITLE_MAX, clip, type ContextIndexData, type PacketCard, openingLine, sizeText } from './sparse.js';
 import { closeOutOf, COMPACT_SEATS_OVER, curlRule, lineClip, offersText, oneLine, ROLE_BY_TEAM, runText, sourceCheckPhrase } from './text.js';
-import type { ReportOpData, SubmitOpData, WorkOpData } from './work.js';
+import { planLabel, type PlanItemView, type PlanOpData, type ProgressOpData, type ReportOpData, type SubmitOpData, type WorkOpData } from './work.js';
 import {
   AUTONOMY_WORDS,
   DONE_STATES,
@@ -468,6 +468,17 @@ export function renderDelivery(meId: string, ev: ParleyEvent, who: Who, attested
       const id = laneLabel(Number(p.n));
       const to = LANE_STATE_WORDS[p.to as keyof typeof LANE_STATE_WORDS] ?? String(p.to);
       return { seq: ev.seq, type: ev.type, from, at, text: p.from === p.to ? `Added a note to ${id}.` : `Moved ${id} to ${to}.`, note: `Crossroom: items id=${id} has the note and the history.` };
+    }
+    case 'plan_updated': {
+      // Content-free: item numbers, states and slots. The words are the project's, read with `progress`.
+      const items = Array.isArray(p.items) ? (p.items as Array<{ n: number; state: string; slot: number | null }>) : [];
+      const each = items
+        .slice(0, 12)
+        .map((i) => `${planLabel(Number(i.n))} ${stateWord(String(i.state))}${typeof i.slot === 'number' ? ` (${slotLetter(i.slot)})` : ''}`)
+        .join(', ');
+      const more = items.length > 12 ? ` and ${items.length - 12} more` : '';
+      const what = p.kind === 'planned' ? 'Planned' : p.kind === 'accepted' ? 'The owner accepted' : 'Reported';
+      return { seq: ev.seq, type: ev.type, from, at, text: `${what}: ${each}${more}.`, note: 'Crossroom: `progress` shows every item of the plan and who has it; `report item=` moves yours.' };
     }
     case 'lane_settings': {
       const words = AUTONOMY_WORDS[p.autonomy as keyof typeof AUTONOMY_WORDS] ?? String(p.autonomy);
@@ -1196,6 +1207,12 @@ export interface WaitData {
    * the web or their own connector (connect-teams B1), and nobody has yet. Absent where none.
    */
   teamAnswer?: number[];
+  /**
+   * Slots of attached seats no agent holds (never joined, or its agent was removed) that nobody was
+   * invited to, on an empty wait outside a lane: only a person sending the seat's join line fills
+   * one, so this agent can tell its user. Slots only, never a link. Absent where none.
+   */
+  noAgent?: number[];
   /** Slots of seats whose agent is away asking its own user something. */
   asking?: number[];
   /** Slots of seats whose agent is still in its turn, waiting for its user to approve a step. */
@@ -1264,6 +1281,12 @@ export function renderWait(d: WaitData, nonce = newNonce()): string {
     const later = team
       ? ` Nobody has taken ${team} yet: a person on the team the other organisation granted will answer, and may be hours away. You may end your turn now; your question stays in the room, and so will the answer.`
       : '';
+    // Letters only: naming another seat's link here would hand it to whoever reads this seat's replies.
+    const open = live ? (d.noAgent ?? []).map(slotLetter) : [];
+    const letters = open.length > 1 ? `${open.slice(0, -1).join(', ')} and ${open.at(-1)}` : (open[0] ?? '');
+    const arrive = open.length
+      ? ` Seat${open.length > 1 ? 's' : ''} ${letters} ${open.length > 1 ? 'have' : 'has'} no agent yet: ask your user to send ${open.length > 1 ? 'each' : 'it'} its join line.`
+      : '';
     const asking = seats(d.asking);
     const back = asking ? ` The agent in ${asking} is asking its own user something and comes back when they answer.` : '';
     const approving = seats(d.approval);
@@ -1276,7 +1299,7 @@ export function renderWait(d: WaitData, nonce = newNonce()): string {
     const quiet = silent ? ` The agent in ${silent} has made no call for over two minutes, so it may have stopped listening; what you say stays in the room for it.` : '';
     // A lane's `wait` never parks: it answers at once, so it names no seconds.
     if (d.lane) return '(nothing new in the lane) Nobody waits in a lane: stop here. Run your pass when your user asks, or on its schedule.';
-    return `(no new activity after ${d.secs}s; session status=${d.status}) Call wait again${live ? '.' : ' — actually the session has ended; stop.'}${back}${held}${steppedAway(d)}${inSideRoom(d)}${idle}${quiet}${leave}${later}`;
+    return `(no new activity after ${d.secs}s; session status=${d.status}) Call wait again${live ? '.' : ' — actually the session has ended; stop.'}${back}${held}${steppedAway(d)}${inSideRoom(d)}${idle}${quiet}${arrive}${leave}${later}`;
   }
   const who = whoFor(d.seats);
   const items = d.events.map((e) =>
@@ -1425,9 +1448,43 @@ export function renderSubmitted(d: SubmitOpData): string {
 
 /** `report`: Crossroom's words only. */
 export function renderReported(d: ReportOpData): string {
-  if (!d.changed) return `The item is already ${stateWord(d.state)}.`;
+  const it = d.item ? oneLine(d.item) : 'The item';
+  if (!d.changed) return `${it} is already ${stateWord(d.state)}.`;
   const via = d.via ? ` (through ${stateWord(d.via)})` : '';
-  return `The item is now ${stateWord(d.state)}${via}.${d.state === 'ready_for_review' ? ' Its owner decides whether to accept the outcome.' : ''}`;
+  return `${it} is now ${stateWord(d.state)}${via}.${d.state === 'ready_for_review' ? ' Its owner decides whether to accept the outcome.' : ''}${d.item ? ' The other seats are told.' : ''}`;
+}
+
+/** One line of a plan: Crossroom's label, state and seat, then the seat-written title and note. */
+function planLines(items: readonly PlanItemView[]): string[] {
+  return items.map((i) => {
+    const who = i.assignee ? `${i.assignee.letter} · ${oneLine(i.assignee.name)}` : 'nobody yet';
+    const note = i.note ? ` (last note: ${oneLine(i.note)})` : '';
+    return `- ${oneLine(i.label)} [${stateWord(i.state)}, ${who}] ${oneLine(i.title)}${note}`;
+  });
+}
+
+/** `plan`: the items it put into the project, inside a fence (their titles are the seat's words), then Crossroom's. */
+export function renderPlan(d: PlanOpData, nonce = newNonce()): string {
+  return [
+    `Put ${d.planned.length} item${d.planned.length === 1 ? '' : 's'} into the project's work; this room's plan holds ${d.total}. ${fenceNote(nonce)}`,
+    '',
+    fence(nonce, 'plan', planLines(d.planned).join('\n')),
+    "Crossroom: they are proposed until a person accepts them into work. Each seat is told; tell them in the room what you need back. `progress` shows where each stands.",
+  ].join('\n');
+}
+
+/** `progress`: every item of this room's plan, inside a fence, then what this seat can do. */
+export function renderProgress(d: ProgressOpData, nonce = newNonce()): string {
+  if (!d.items.length)
+    return d.lead ? 'This room has no plan yet. As its lead, `plan` puts one into the project and assigns each item to a seat.' : "This room has no plan yet. Its lead puts one in, and you are told when it does.";
+  const mine = d.items.filter((i) => i.assignee?.letter === d.me).map((i) => i.label);
+  const proposed = d.items.filter((i) => i.state === 'proposed').length;
+  return [
+    `This room's plan, ${d.items.length} item${d.items.length === 1 ? '' : 's'}. ${fenceNote(nonce)}`,
+    '',
+    fence(nonce, 'plan', planLines(d.items).join('\n')),
+    `Crossroom: ${mine.length ? `yours: ${mine.join(', ')}. \`report item=<P> state=working|blocked|ready_for_review\` moves one` : 'none is assigned to you'}.${proposed ? ` ${proposed} still wait for a person to accept them into work.` : ''}${d.lead ? ' As lead you may report on any of them.' : ''}`,
+  ].join('\n');
 }
 
 const CALL_STATE_WORDS: Record<string, string> = {
@@ -1874,6 +1931,9 @@ export interface OpData {
   work: WorkOpData;
   submit: SubmitOpData;
   report: ReportOpData;
+  /** A project room's plan: put in by its lead, read by every seat. */
+  plan: PlanOpData;
+  progress: ProgressOpData;
   /** The room board's operations, offered in a room created with a board only. */
   board: BoardData;
   board_set: BoardSetData;

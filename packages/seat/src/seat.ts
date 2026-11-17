@@ -36,6 +36,8 @@ import {
   renderDeclined,
   renderFinished,
   renderRecord,
+  renderPlan,
+  renderProgress,
   renderReported,
   renderSubmitted,
   renderWork,
@@ -177,6 +179,8 @@ const RENDER: Renderers = {
   work: (d) => renderWork(d),
   submit: (d) => renderSubmitted(d),
   report: (d) => renderReported(d),
+  plan: (d) => renderPlan(d),
+  progress: (d) => renderProgress(d),
   // The room board's, never an end-to-end room's (its create refuses a board): not in `OPS`.
   board: (d) => renderBoard(d),
   board_set: (d) => renderBoardSet(d),

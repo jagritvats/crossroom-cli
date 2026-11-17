@@ -57,12 +57,17 @@ import type {
   PolicyVerdict,
   RunnerReason,
   SeatPolicy,
+  SpendAnswer,
+  SpendInput,
   StartSeatPayload,
 } from '@parley/shared/runner';
 import { HEARTBEAT_S, LEASE_WAIT_S } from '@parley/shared/runner';
 import { ADAPTERS, type Adapter, resolveBin, UsageTotals, withMcpConfigFile, withUsage, writeMcpConfigFile } from '../runners/adapters.js';
 import { ACP_COMMANDS, AcpHosted, acpDriver, acpDriverOn } from '../runners/acp.js';
 import { Hosted, type RunnerOptions } from '../runners/hosted.js';
+import { ApiSeat } from '../runners/api.js';
+import { type SpendGate, UNMETERED } from '@parley/shared/house';
+import { apiSeatKey, relaySpendGate } from './api-seat.js';
 import type { RoomState, SeatInfo } from '../runners/seat-port.js';
 import { type SeatConfig, seatBrief, seatDir, seatPolicy } from './config.js';
 import type { EgressPolicy, OutboundCall, RunnerOnly } from './egress-types.js';
@@ -84,6 +89,8 @@ export interface HostRelay {
   /** `POST /api/runner/jobs/:id`; with `seatToken`, also as the seat (`x-parley-seat`), which writing seat state needs. */
   updateJob(jobId: string, input: JobUpdateInput, seatToken?: string): Promise<JobUpdateResult | null>;
   heartbeat(input: HeartbeatInput): Promise<HeartbeatResult>;
+  /** `POST /api/runner/jobs/:id/spend` (`RelayClient.spend`): the relay's ledger for a house job's seat. Absent, every `api` seat runs unmetered. */
+  spend?(jobId: string, input: SpendInput): Promise<SpendAnswer>;
 }
 
 export type Dispatched =
@@ -288,7 +295,7 @@ interface Running {
   jobId: string;
   label: string;
   seatToken: string;
-  hosted: Hosted | AcpHosted | null;
+  hosted: Hosted | AcpHosted | ApiSeat | null;
   port: HttpSeatPort | null;
   route: ProxyRoute | null;
   /** The job's signing and receipting, in front of the relay on its route. */
@@ -573,6 +580,7 @@ export class RunnerHost {
     };
     if (!seat) return fail('unknown_seat', 'no seat by that label is configured here');
     if (seat.paused && !job.workdir) return fail('seat_paused', 'the seat is paused');
+    if (seat.runtime === 'api') return this.launchApi(job, seat, fail);
     if (seat.runtime !== 'claude' && seat.unconfined_reads !== 'acknowledged') return fail('error', `${seat.runtime} needs unconfined_reads: acknowledged`);
     const base = this.o.runners?.adapters?.[seat.runtime] ?? ADAPTERS[seat.runtime];
     if (base.hostedBlocked) return fail('error', base.hostedBlocked);
@@ -655,81 +663,16 @@ export class RunnerHost {
 
       // Open the seat, and keep trying while the relay cannot be reached: a runner started before
       // its network is up keeps its jobs, their checkouts and their resume ids.
-      let info: SeatInfo;
-      let room: RoomState | null;
-      for (let attempt = 0; ; attempt++) {
-        const proxy = await this.egressProxy();
-        if (over()) return await this.abandon(r);
-        const toRelay = relayForwarder({ relay: this.o.relay, seatToken: job.seatToken, fetch: this.o.fetch });
-        // In this order: the policy gate, then signing and receipting, then sealing
-        // and opening an end-to-end room, then the relay.
-        const keys = this.o.e2ee?.() ?? null;
-        const sealing = keys
-          ? e2eeEgress(toRelay, {
-              relay: this.o.relay,
-              seatToken: job.seatToken,
-              fetch: this.o.fetch,
-              runnerId: keys.runnerId,
-              runnerKey: keys.runnerKey,
-              ...(keys.rooms ? { remember: { known: () => keys.rooms!.known(job.sessionId), note: () => keys.rooms!.note(job.sessionId) } } : {}),
-              log: (line) => this.log(`job ${short(job.id)} (${job.label}): ${line}`),
-            }).forward
-          : toRelay;
-        const signer = this.o.signer?.() ?? null;
-        r.signing = signer
-          ? signingRoute(sealing, {
-              relay: this.o.relay,
-              seatToken: job.seatToken,
-              fetch: this.o.fetch,
-              signer,
-              signWrites: this.o.signWrites?.(job) ?? false,
-              attest: { dir: r.checkout.cwd, label: seat.label },
-              cosignAs: this.o.cosignAs ?? null,
-              log: (line) => this.log(`job ${short(job.id)} (${job.label}): ${line}`),
-            })
-          : null;
-        r.route = proxy.add({ forward: r.signing?.forward ?? sealing, gate });
-        writeMcpConfigFile(mcpFile, 'crossroom', r.route.url);
-        r.port = new HttpSeatPort({
-          relay: this.o.relay,
-          seatToken: job.seatToken,
-          fetch: this.o.fetch,
-          mcpUrl: r.route.url,
-          workDir: path.join(jobDir, 'work'),
-          logPath: path.join(jobDir, 'log'),
-          reportState: (code) => this.o.client.updateJob(job.id, { runnerState: { note: code } }, job.seatToken),
-          resume: {
-            get: () => resume,
-            set: (id) => {
-              resume = id;
-              this.o.store.setResumeId(job.id, id);
-            },
-          },
-          gate,
-        });
-        try {
-          info = await r.port.open();
-          // Subscribed before the room's status is read: an end after that read is delivered, and
-          // one before it is in what the read says.
-          r.unsub = r.port.subscribe(onEvent);
-          room = await r.port.room();
-          break;
-        } catch (e) {
-          r.unsub();
-          r.unsub = () => {};
-          r.route.close();
-          r.route = null;
-          r.signing = null;
-          await r.port.close().catch(() => {});
-          r.port = null;
-          if (over()) return await this.abandon(r);
-          if (!transient(e)) throw e;
-          const wait = Math.min(1000 * 2 ** attempt, 60_000);
-          this.log(`job ${short(job.id)} (${job.label}): the relay did not answer (${(e as Error)?.message ?? e}); trying again in ${Math.round(wait / 1000)} s`);
-          await sleep(wait, this.life.signal);
-          if (over()) return await this.abandon(r);
-        }
-      }
+      const opened = await this.openSeat(job, r, {
+        gate,
+        attestDir: r.checkout.cwd,
+        label: seat.label,
+        onEvent,
+        mcpFile,
+        resume: { get: () => resume, set: (id) => (resume = id) },
+      });
+      if (!opened) return;
+      const { info, room } = opened;
       if (info.participantId !== job.participantId || info.sessionId !== job.sessionId) {
         await this.teardown(r, 'failed', 'seat_mismatch');
         return;
@@ -747,18 +690,230 @@ export class RunnerHost {
       if (over()) return await this.abandon(r);
       r.hosted = overAcp
         ? new AcpHosted(
-            r.port,
+            r.port!,
             seatInfo,
             acpDriver(seat.runtime, { resolveBin: this.o.runners?.resolveBin, env: Object.fromEntries(this.secretEnv.names.map((n) => [n, ''])) }),
             { silenceMs: this.o.runners?.silenceMs, killGraceMs: this.o.runners?.killGraceMs, brief: seatBrief(seat, this.o.home), notes },
           )
-        : new Hosted(r.port, seatInfo, adapter, bin, this.o.runners ?? {});
+        : new Hosted(r.port!, seatInfo, adapter, bin, this.o.runners ?? {});
       this.log(`job ${short(job.id)} (${job.label}): ${adapter.label}${overAcp ? ' over ACP' : ''} started in its checkout${r.checkout.commit ? ` at ${r.checkout.commit.slice(0, 10)}` : ''}`);
       r.hosted.start().catch((e) => this.log(`job ${short(job.id)}: ${(e as Error)?.message ?? e}`));
     } catch (e) {
       if (over()) return await this.abandon(r);
       this.log(`job ${short(job.id)} (${job.label}): could not start: ${(e as Error)?.message ?? e}`);
       await this.teardown(r, 'failed', 'error');
+    }
+  }
+
+  /**
+   * The job's route on the egress proxy and its seat port, opened, kept trying while the relay cannot
+   * be reached (a runner started before its network is up, or a relay restarting): the route goes
+   * through the policy gate, then signing and receipting, then an end-to-end room's sealing, then the
+   * relay. Null when the job was torn down or the runner stopped meanwhile (abandoned here).
+   */
+  private async openSeat(
+    job: StoredJob,
+    r: Running,
+    o: {
+      gate: ReturnType<typeof policyGate>;
+      attestDir: string;
+      label: string;
+      onEvent: (ev: ParleyEvent) => void;
+      /** Where a CLI reads the route's loopback URL; none for an `api` seat, which is handed it. */
+      mcpFile: string | null;
+      resume: { get(): string | null; set(id: string): void };
+    },
+  ): Promise<{ info: SeatInfo; room: RoomState | null } | null> {
+    const over = () => this.stopped || r.tearing !== null;
+    for (let attempt = 0; ; attempt++) {
+      const proxy = await this.egressProxy();
+      if (over()) {
+        await this.abandon(r);
+        return null;
+      }
+      const toRelay = relayForwarder({ relay: this.o.relay, seatToken: job.seatToken, fetch: this.o.fetch });
+      // In this order: the policy gate, then signing and receipting, then sealing
+      // and opening an end-to-end room, then the relay.
+      const keys = this.o.e2ee?.() ?? null;
+      const sealing = keys
+        ? e2eeEgress(toRelay, {
+            relay: this.o.relay,
+            seatToken: job.seatToken,
+            fetch: this.o.fetch,
+            runnerId: keys.runnerId,
+            runnerKey: keys.runnerKey,
+            ...(keys.rooms ? { remember: { known: () => keys.rooms!.known(job.sessionId), note: () => keys.rooms!.note(job.sessionId) } } : {}),
+            log: (line) => this.log(`job ${short(job.id)} (${job.label}): ${line}`),
+          }).forward
+        : toRelay;
+      const signer = this.o.signer?.() ?? null;
+      r.signing = signer
+        ? signingRoute(sealing, {
+            relay: this.o.relay,
+            seatToken: job.seatToken,
+            fetch: this.o.fetch,
+            signer,
+            signWrites: this.o.signWrites?.(job) ?? false,
+            attest: { dir: o.attestDir, label: o.label },
+            cosignAs: this.o.cosignAs ?? null,
+            log: (line) => this.log(`job ${short(job.id)} (${job.label}): ${line}`),
+          })
+        : null;
+      r.route = proxy.add({ forward: r.signing?.forward ?? sealing, gate: o.gate });
+      if (o.mcpFile) writeMcpConfigFile(o.mcpFile, 'crossroom', r.route.url);
+      r.port = new HttpSeatPort({
+        relay: this.o.relay,
+        seatToken: job.seatToken,
+        fetch: this.o.fetch,
+        mcpUrl: r.route.url,
+        workDir: path.join(r.jobDir, 'work'),
+        logPath: path.join(r.jobDir, 'log'),
+        reportState: (code) => this.o.client.updateJob(job.id, { runnerState: { note: code } }, job.seatToken),
+        resume: {
+          get: () => o.resume.get(),
+          set: (id) => {
+            o.resume.set(id);
+            this.o.store.setResumeId(job.id, id);
+          },
+        },
+        gate: o.gate,
+      });
+      try {
+        const info = await r.port.open();
+        // Subscribed before the room's status is read: an end after that read is delivered, and
+        // one before it is in what the read says.
+        r.unsub = r.port.subscribe(o.onEvent);
+        const room = await r.port.room();
+        return { info, room };
+      } catch (e) {
+        r.unsub();
+        r.unsub = () => {};
+        r.route.close();
+        r.route = null;
+        r.signing = null;
+        await r.port.close().catch(() => {});
+        r.port = null;
+        if (over()) {
+          await this.abandon(r);
+          return null;
+        }
+        if (!transient(e)) throw e;
+        const wait = Math.min(1000 * 2 ** attempt, 60_000);
+        this.log(`job ${short(job.id)} (${job.label}): the relay did not answer (${(e as Error)?.message ?? e}); trying again in ${Math.round(wait / 1000)} s`);
+        await sleep(wait, this.life.signal);
+        if (over()) {
+          await this.abandon(r);
+          return null;
+        }
+      }
+    }
+  }
+
+  /**
+   * A job whose seat's runtime is `api` (runner/api-seat.ts): no CLI to find and no checkout. Its
+   * agent is `ApiSeat`, on this process's Anthropic key, reaching the room through the job's route on
+   * the egress proxy, so the seat's policy gate applies to every call it makes. A house job (Crossroom's
+   * own agent) meters each model request through the relay's ledger; any other `api` seat runs on its
+   * team's own key, unmetered here.
+   */
+  private async launchApi(job: StoredJob, seat: SeatConfig, fail: (reason: RunnerReason, why: string) => Promise<void>): Promise<void> {
+    const apiKey = this.o.runners?.apiKey ?? apiSeatKey(this.o.env ?? process.env);
+    if (!apiKey) return fail('cli_missing', 'no Anthropic API key here (PARLEY_HOUSE_ANTHROPIC_KEY or ANTHROPIC_API_KEY)');
+    let resolveDone!: () => void;
+    const done = new Promise<void>((res) => (resolveDone = res));
+    const jobDir = job.workdir ?? path.join(this.jobsRoot, job.id);
+    const r: Running = {
+      jobId: job.id,
+      label: job.label,
+      seatToken: job.seatToken,
+      hosted: null,
+      port: null,
+      route: null,
+      signing: null,
+      checkout: null,
+      jobDir,
+      endTimer: null,
+      usage: new UsageTotals(),
+      tearing: null,
+      done,
+      resolveDone,
+      unsub: () => {},
+    };
+    this.jobs.set(job.id, r);
+    const over = () => this.stopped || r.tearing !== null;
+    try {
+      mkdirSync(jobDir, { recursive: true });
+      const policy = seatPolicy(seat);
+      const repos = [path.basename(jobDir)];
+      const gate = policyGate({
+        jobId: job.id,
+        label: job.label,
+        policy,
+        egress: this.egress,
+        runner: () => ({ knownSecrets: this.knownSecrets(job), repos }),
+        onDecision: (call, verdict) => this.o.onDecision?.(job.id, call, verdict),
+        onForwarded: (outboundId, result) => this.o.onForwarded?.(job.id, outboundId, result),
+        notes: () => this.o.notesFor?.(job.id) ?? [],
+      });
+      const onEvent = (ev: ParleyEvent) => {
+        if (ev.type === 'session_ended') this.endSoon(r);
+      };
+      const opened = await this.openSeat(job, r, { gate, attestDir: jobDir, label: seat.label, onEvent, mcpFile: null, resume: { get: () => null, set: () => {} } });
+      if (!opened) return;
+      const { info, room } = opened;
+      if (info.participantId !== job.participantId || info.sessionId !== job.sessionId) {
+        await this.teardown(r, 'failed', 'seat_mismatch');
+        return;
+      }
+      if (!room || room.status === 'ended') {
+        await this.teardown(r, 'done');
+        return;
+      }
+      // What the relay's ledger says of this seat: a house job is metered there; a seat the relay keeps
+      // no ledger for (a team's own `api` seat) answers `JOB_GONE`, and runs on its team's key.
+      const spend = await this.spendFor(job);
+      if (over()) return await this.abandon(r);
+      this.o.store.started(job.id, { workdir: jobDir, commitSha: null });
+      await this.o.client.updateJob(job.id, { state: 'running' }).catch(() => null);
+      if (over()) return await this.abandon(r);
+      r.hosted = new ApiSeat(
+        r.port!,
+        { ...info, hosted: { runner: 'api', cwd: jobDir, ...(seat.model ? { model: seat.model } : {}) } },
+        {
+          apiKey,
+          ...(seat.model ? { model: seat.model } : {}),
+          ...(this.o.runners?.effort ? { effort: this.o.runners.effort } : {}),
+          webSearch: this.o.runners?.webSearch ?? true,
+          spend,
+          ...(this.o.runners?.createClient ? { createClient: this.o.runners.createClient } : {}),
+          onUsage: (u) => r.usage.add(u),
+        },
+      );
+      this.log(`job ${short(job.id)} (${job.label}): Crossroom's agent loop started on the Anthropic API${spend === UNMETERED ? '' : ', metered by the relay'}`);
+      r.hosted.start().catch((e) => this.log(`job ${short(job.id)}: ${(e as Error)?.message ?? e}`));
+    } catch (e) {
+      if (over()) return await this.abandon(r);
+      this.log(`job ${short(job.id)} (${job.label}): could not start: ${(e as Error)?.message ?? e}`);
+      await this.teardown(r, 'failed', 'error');
+    }
+  }
+
+  /** The spend gate of an `api` job: the relay's ledger for a house job, else none. */
+  private async spendFor(job: StoredJob): Promise<SpendGate> {
+    const relay = this.o.client;
+    if (!relay.spend) return UNMETERED;
+    const gate = relaySpendGate({ spend: (id, input) => relay.spend!(id, input) }, job.id, { log: (line) => this.log(`job ${short(job.id)} (${job.label}): ${line}`) });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const look = await relay.spend(job.id, { op: 'look' });
+        return look.op === 'look' && look.metered ? gate : UNMETERED;
+      } catch (e) {
+        // Not a seat the relay keeps a ledger for: a team's own `api` seat, on its own key.
+        if ((e as { status?: unknown } | null)?.status === 404) return UNMETERED;
+        // The relay is restarting: a house seat must never run unmetered, so it waits.
+        if (this.stopped || attempt >= 8) return gate;
+        await sleep(Math.min(1000 * 2 ** attempt, 15_000), this.life.signal);
+      }
     }
   }
 

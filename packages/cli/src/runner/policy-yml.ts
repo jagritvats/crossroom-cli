@@ -683,7 +683,8 @@ function* dispatchPolicyOf(seat: SeatConfig, home: string): GitReading<{ budget:
     if (!loaded.ok) throw new PolicyYmlError(`the seat's policy does not check: ${loaded.error}`);
     return { budget: pick(loaded.policy.budget), askLinks: true };
   };
-  if (!policyYmlOn()) return own();
+  // An `api` seat reads no repository (runner/api-seat.ts): its policy is runner.yml's alone.
+  if (!policyYmlOn() || seat.runtime === 'api') return own();
   try {
     const job = yield* jobPolicyOf(seat, home);
     return { budget: pick(job.policy.budget), askLinks: job.repo.mayAsk.askLinks };

@@ -243,14 +243,22 @@ export const StartSeatPayload = z
      * `bad_seal`, so the relay opens no call room for one.
      */
     call: DispatchCall.optional(),
+    /**
+     * Or, for Crossroom's own agent seated in a room by its owner (the house runner):
+     * the workspace whose credit pays for it, or null where the
+     * instance meters nothing. The runner takes the job only on a seat whose runtime is `api`, and only
+     * once the relay says the seat holds a live reservation of that credit (`SpendLook`). A runner
+     * without `RunnerCapabilities.houseSeats` refuses it as `bad_seal`, so the relay never sends one there.
+     */
+    house: z.object({ orgId: z.string().min(1).max(64).nullable() }).strict().optional(),
     /** The relay's public URL: the runner refuses a job naming any relay but the one it registered with. */
     relay: z.string().url().max(512),
     issuedAt: z.string().datetime(),
   })
   .strict()
   .refine(
-    (p) => [p.ask, p.connection, p.grant, p.call].filter((x) => x !== undefined).length === 1,
-    'a job carries exactly one of an ask token, a connection, a grant or a call',
+    (p) => [p.ask, p.connection, p.grant, p.call, p.house].filter((x) => x !== undefined).length === 1,
+    'a job carries exactly one of an ask token, a connection, a grant, a call or a house seat',
   );
 export type StartSeatPayload = z.infer<typeof StartSeatPayload>;
 
@@ -459,8 +467,12 @@ export interface MintRunnerTokenResult {
 
 export const CliHealth = z.enum(['ok', 'signed_out', 'limited', 'unknown']);
 export type CliHealth = z.infer<typeof CliHealth>;
-/** The runtimes a standing seat may use. Antigravity stays `hostedBlocked` (SECURITY.md, the runner table). */
-export const StandingRuntime = z.enum(['claude', 'codex', 'grok']);
+/**
+ * The runtimes a standing seat may use. Antigravity stays `hostedBlocked` (SECURITY.md, the runner
+ * table). `api` is an agent loop on the Anthropic Messages API (runners/api.ts in the client): no CLI,
+ * no shell, no checkout, its key in the runner's own environment.
+ */
+export const StandingRuntime = z.enum(['claude', 'codex', 'grok', 'api']);
 export type StandingRuntime = z.infer<typeof StandingRuntime>;
 
 export const RunnerCapabilities = z
@@ -504,9 +516,55 @@ export const RunnerCapabilities = z
      * never leases reads, so the relay queues none for it and says why.
      */
     trackerReads: z.boolean().optional(),
+    /**
+     * The runner takes a `StartSeatPayload.house` (Crossroom's own agent on an `api` seat) and meters
+     * its model requests through `POST /api/runner/jobs/:id/spend`. A runner from before it would
+     * refuse such a job as `bad_seal`, so the relay seats Crossroom's agent only on one that declared it.
+     */
+    houseSeats: z.boolean().optional(),
   })
   .strict();
 export type RunnerCapabilities = z.infer<typeof RunnerCapabilities>;
+
+/**
+ * `POST /api/runner/jobs/:id/spend`: the house runner asking the relay's ledger about one job's seat
+ * on the runner's session. Every amount is integer
+ * micro-dollars.
+ * - `look`: whether the seat holds a live reservation of its workspace's credit, and what of it is left.
+ * - `reserve`: hold `micro` (a model request's worst case) against the seat's reservation and the
+ *   instance's day, answering a hold id, or `ok: false` when it does not fit.
+ * - `settle`: what the request really cost, at most what its hold held. Exactly once per hold.
+ */
+export const SpendInput = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('look') }).strict(),
+  z.object({ op: z.literal('reserve'), micro: z.number().int().min(0).max(100_000_000) }).strict(),
+  z
+    .object({
+      op: z.literal('settle'),
+      hold: z.string().regex(/^sh_[A-Za-z0-9_-]{16,64}$/),
+      reservedMicro: z.number().int().min(0).max(100_000_000),
+      actualMicro: z.number().int().min(0).max(100_000_000),
+      /** What the request used, recorded beside its cost (absent when the API answered nothing). */
+      usage: z
+        .object({
+          model: z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/),
+          inputTokens: z.number().int().min(0).max(100_000_000),
+          outputTokens: z.number().int().min(0).max(100_000_000),
+          cacheWrite: z.number().int().min(0).max(100_000_000),
+          cacheRead: z.number().int().min(0).max(100_000_000),
+          searches: z.number().int().min(0).max(10_000),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+]);
+export type SpendInput = z.infer<typeof SpendInput>;
+export type SpendAnswer =
+  | { op: 'look'; open: boolean; leftMicro: number; metered: boolean }
+  | { op: 'reserve'; ok: true; hold: string }
+  | { op: 'reserve'; ok: false }
+  | { op: 'settle'; ok: true };
 
 /** `POST /api/runner/register`, with `Authorization: Bearer rt_…`. Keys are raw public keys in base64url. */
 export const RegisterInput = z

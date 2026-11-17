@@ -54,6 +54,8 @@ import {
   type RunnerControl,
   type SeatsInput,
   type SeatsResult,
+  type SpendAnswer,
+  type SpendInput,
   type StandingRuntime,
 } from '@parley/shared/runner';
 import type { SessionSnapshot } from '@parley/shared';
@@ -214,6 +216,13 @@ const GrantsAnswer = z.looseObject({
   accounts: z.array(z.string()).optional(),
 });
 
+/** A spend answer (`SpendAnswer`), its numbers whole and never negative. */
+const SpendAnswerShape = z.union([
+  z.looseObject({ op: z.literal('look'), open: z.boolean(), leftMicro: z.number().int().min(0), metered: z.boolean() }),
+  z.looseObject({ op: z.literal('reserve'), ok: z.literal(true), hold: z.string().regex(/^sh_[A-Za-z0-9_-]{16,64}$/) }),
+  z.looseObject({ op: z.literal('reserve'), ok: z.literal(false) }),
+  z.looseObject({ op: z.literal('settle'), ok: z.literal(true) }),
+]);
 const HeartbeatAnswer = z.looseObject({ ok: z.literal(true), sessionExpiresAt: z.string(), control: Control, cancel: z.array(z.string()) });
 
 const LedgerSyncAnswer = z.looseObject({ ok: z.literal(true), stored: z.number().int().min(0), highWater: z.number().int().min(0) });
@@ -611,6 +620,17 @@ export class RelayClient {
   async updateJob(jobId: string, update: JobUpdateInput, o: { seatToken?: string } = {}): Promise<JobUpdateResult> {
     const out = await this.onSession('POST', this.jobPath(jobId), { body: update, ...(o.seatToken ? { seat: o.seatToken } : {}) });
     return this.parse(JobUpdateAnswer, out, 'POST /api/runner/jobs/:id') as JobUpdateResult;
+  }
+
+  /**
+   * `POST /api/runner/jobs/:id/spend`: the relay's ledger for the seat of a house job (Crossroom's
+   * agent on an `api` seat): look, reserve a model request's worst case as a hold, settle it once.
+   */
+  async spend(jobId: string, input: SpendInput): Promise<SpendAnswer> {
+    const out = await this.onSession('POST', `${this.jobPath(jobId)}/spend`, { body: input });
+    const r = this.parse(SpendAnswerShape, out, 'POST /api/runner/jobs/:id/spend');
+    if (r.op !== input.op) throw this.fail('protocol', 0, 'the relay answered another spend operation');
+    return r as SpendAnswer;
   }
 
   /** `POST /api/runner/heartbeat`: renews the leases of the jobs running here, and says which the relay withdrew. */

@@ -49,8 +49,14 @@ export type CreatableKind = z.infer<typeof CreatableKind>;
 export const Reachability = z.enum(['push', 'poll', 'unknown']);
 export type Reachability = z.infer<typeof Reachability>;
 
-export const HostedRunner = z.enum(['claude', 'codex', 'agy', 'grok']);
+/**
+ * What runs a hosted seat: an agent CLI, or `api`, Crossroom's own agent loop on the Anthropic
+ * Messages API (packages/cli/src/runners/api.ts), which has no shell and no files.
+ */
+export const HostedRunner = z.enum(['claude', 'codex', 'agy', 'grok', 'api']);
 export type HostedRunner = z.infer<typeof HostedRunner>;
+/** The hosted runners that are an agent CLI on this machine's PATH. */
+export type CliRunner = Exclude<HostedRunner, 'api'>;
 
 export const HostedConfig = z.object({
   runner: HostedRunner,
@@ -498,6 +504,12 @@ export const EventType = z.enum([
   // seat's letter or 'owner'. Content-free, delivered to every seat: the other side's next delivery
   // says how far this side's agent now goes.
   'lane_settings',
+  // A project room's plan changed (ops/plan.ts, `@parley/shared/work`): the lead planned items, a seat
+  // reported on one, or the owner accepted them. { kind: 'planned' | 'reported' | 'accepted', items:
+  // [{ n, state, slot }] }, `n` the item's P-number in this room and `slot` its assignee's (or null).
+  // Content-free: the words live in the work items, sealed under the project key. Delivered to every
+  // seat but the one whose doing it was, so the others hear it in `wait`.
+  'plan_updated',
 ]);
 export type EventType = z.infer<typeof EventType>;
 

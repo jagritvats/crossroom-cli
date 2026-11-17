@@ -13,7 +13,7 @@
  *     dir: ~/src/payments-api
  *     checkout: worktree        # worktree (the default for git) | live
  *     ref: origin/main          # answers from this commit
- *     runtime: claude           # claude | codex | grok
+ *     runtime: claude           # claude | codex | grok | api (the Anthropic API, no CLI and no checkout)
  *     unconfined_reads: false   # must be `acknowledged` for codex or grok
  *     description: "Answers about payments-api: contracts, limits, error codes."
  *     brief_file: .parley/seat-brief.md
@@ -129,7 +129,8 @@ export const SeatConfig = z
   })
   .strict()
   .superRefine((s, ctx) => {
-    if (s.runtime !== 'claude' && s.unconfined_reads !== 'acknowledged')
+    // An `api` seat reads no files: its agent is a loop on the Anthropic API with the room's tools only.
+    if (s.runtime !== 'claude' && s.runtime !== 'api' && s.unconfined_reads !== 'acknowledged')
       ctx.addIssue({
         code: 'custom',
         path: ['unconfined_reads'],

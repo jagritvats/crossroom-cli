@@ -13,6 +13,10 @@
  * - **Warp**: a Tab Config (`[[panes]]`, one leaf per agent) written to Warp's own tab_configs
  *   folder, 0600, and opened with `warp://tab_config/<name>`. Warp's URI scheme cannot run a command
  *   by itself; a Tab Config is how its docs say to.
+ * - **Windows Terminal**: one `wt.exe` call, `new-tab` then a `split-pane` per agent, each pane
+ *   titled for its seat. Each pane runs Windows PowerShell with the agent's command as an encoded
+ *   command: Windows Terminal starts a pane's program by CreateProcess, which finds `claude.exe` but
+ *   not the `claude.cmd` npm installs, and it re-quotes the arguments it splits on `;`.
  * - **Orca**: `orca agent launch --agent <a> --prompt <line>`, in the workspace this directory
  *   belongs to (Orca's CLI is under Settings, Experimental, CLI).
  * - **Paseo**: `paseo run --provider <a> --no-wait <line>`, on the daemon the CLI finds.
@@ -38,7 +42,7 @@ import { resolveBin } from '../runners/adapters.js';
 import { registerCommand } from './index.js';
 import { localSessions, type ResolvedSession, resolveResume, resumeSpecs, type SessionSource } from './local-sessions.js';
 
-export const WORKBENCHES = ['tmux', 'wezterm', 'kitty', 'warp', 'orca', 'paseo', 'print'] as const;
+export const WORKBENCHES = ['tmux', 'wezterm', 'kitty', 'warp', 'wt', 'orca', 'paseo', 'print'] as const;
 export type Workbench = (typeof WORKBENCHES)[number];
 export const AGENT_CLIS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 export type AgentCli = (typeof AGENT_CLIS)[number];
@@ -73,8 +77,12 @@ export type Step =
   | { kind: 'open'; url: string }
   | { kind: 'say'; text: string };
 
-/** A seat link: an http(s) origin, then /j/<token>, nothing after it but an optional fragment. */
-const SEAT_LINK = /^(https?:\/\/[^\s/?#]+)\/j\/([A-Za-z0-9_-]{8,200})(#[^\s]*)?$/;
+/**
+ * A seat link: an http(s) origin (a host name or address, a bracketed IPv6 address, an optional
+ * port), then /j/<token>, nothing after it but an end-to-end room's key (`#e=<base64url>`). Every
+ * character it admits is one no shell reads specially, since the link goes into a command line.
+ */
+const SEAT_LINK = /^(https?:\/\/(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?)\/j\/([A-Za-z0-9_-]{8,200})(#e=[A-Za-z0-9_-]{1,200})?$/;
 
 export function seatOrigin(seatUrl: string): string {
   const m = SEAT_LINK.exec(seatUrl);
@@ -122,17 +130,76 @@ export function agentArgv(seat: LaunchSeat): string[] {
   }
 }
 
-/** One word for a POSIX shell (bash, zsh and fish read single quotes alike). */
-export const shQuote = (w: string): string => (/^[A-Za-z0-9_./:=@%+-]+$/.test(w) ? w : `'${w.replaceAll("'", `'\\''`)}'`);
-/** One word for PowerShell, Warp's shell on Windows. */
-export const psQuote = (w: string): string => (/^[A-Za-z0-9_./:=@%+-]+$/.test(w) ? w : `'${w.replaceAll("'", "''")}'`);
-export const shellLine = (argv: string[], platform: NodeJS.Platform): string => argv.map(platform === 'win32' ? psQuote : shQuote).join(' ');
+/**
+ * One word for a POSIX shell: bash, zsh and fish. Single quotes alone are not enough, since fish
+ * reads a backslash before a quote or another backslash as an escape inside them. So a quote or a
+ * backslash is written outside the single quotes, between double quotes, which all three read as
+ * that one character, and the parts join into one word. A word that starts with `=` (zsh expands
+ * it) or `~` is quoted too.
+ */
+export function shQuote(w: string): string {
+  if (/^[A-Za-z0-9_./:@%+-][A-Za-z0-9_./:=@%+-]*$/.test(w)) return w;
+  let out = '';
+  let open = false;
+  for (const ch of w) {
+    if (ch === "'" || ch === '\\') {
+      if (open) out += "'";
+      open = false;
+      out += ch === "'" ? `"'"` : '"\\\\"';
+    } else {
+      if (!open) out += "'";
+      open = true;
+      out += ch;
+    }
+  }
+  return open ? `${out}'` : out || "''";
+}
+
+/** The characters PowerShell reads as a single quote: `'` and the curly ones, U+2018 to U+201B. */
+const PS_QUOTES = new Set(["'", ...[0x2018, 0x2019, 0x201a, 0x201b].map((c) => String.fromCodePoint(c))]);
+
+/**
+ * One word for PowerShell, Warp's shell on Windows: single-quoted, each quote character doubled,
+ * the curly ones included, since PowerShell ends a single-quoted string on any of them. No `@` at
+ * a word's start bare (splatting).
+ */
+export function psQuote(w: string): string {
+  if (/^[A-Za-z0-9_./:=%+-][A-Za-z0-9_./:=@%+-]*$/.test(w)) return w;
+  return psQuoteAlways(w);
+}
+
+/** A PowerShell single-quoted string, whatever the word. */
+export function psQuoteAlways(w: string): string {
+  let out = "'";
+  for (const ch of w) out += PS_QUOTES.has(ch) ? ch + ch : ch;
+  return `${out}'`;
+}
+
+/** A PowerShell command line: a quoted program needs the call operator, or PowerShell reads it as a string. */
+export function psLine(argv: string[]): string {
+  const words = argv.map(psQuote);
+  return words[0]?.startsWith("'") ? `& ${words.join(' ')}` : words.join(' ');
+}
+
+export const shellLine = (argv: string[], platform: NodeJS.Platform): string => (platform === 'win32' ? psLine(argv) : argv.map(shQuote).join(' '));
+
+/**
+ * One argument for `wt.exe`, which splits its own command line into commands at every `;`, inside
+ * an argument too, unless the `;` is escaped as `\;`.
+ */
+export const wtArg = (w: string): string => w.replaceAll(';', '\\;');
+
+/** A pane's program for Windows Terminal: Windows PowerShell running the line, which reaches no parser but PowerShell's. */
+export function wtPaneArgv(line: string): string[] {
+  return ['powershell.exe', '-NoLogo', '-NoExit', '-EncodedCommand', Buffer.from(line, 'utf16le').toString('base64')];
+}
 
 /** Where Warp keeps its Tab Configs (docs.warp.dev/terminal/windows/tab-configs). */
 export function warpTabConfigDir(platform: NodeJS.Platform, home: string, env: Record<string, string | undefined>): string {
-  if (platform === 'darwin') return path.join(home, '.warp', 'tab_configs');
+  // The target system's path rules, not this one's: a plan is made (and tested) for any system.
+  if (platform === 'darwin') return path.posix.join(home, '.warp', 'tab_configs');
   if (platform === 'win32') return path.win32.join(env.APPDATA ?? path.win32.join(home, 'AppData', 'Roaming'), 'warp', 'Warp', 'data', 'tab_configs');
-  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'warp-terminal', 'tab_configs');
+  return path.posix.join(env.XDG_DATA_HOME || path.posix.join(home, '.local', 'share'), 'warp-terminal', 'tab_configs');
 }
 
 const toml = (s: string) => JSON.stringify(s);
@@ -173,7 +240,7 @@ export function launchPlan(bench: Workbench, input: LaunchInput): Step[] {
   const name = room ? `crossroom-${room}` : 'crossroom';
   // Orca and Paseo start sessions of their own: a session found on this computer reopens only in a pane.
   if ((bench === 'orca' || bench === 'paseo') && seats.some((s) => s.resume))
-    throw new Usage(`${bench === 'orca' ? 'Orca' : 'Paseo'} starts its own sessions, so --resume can't reopen one there. Use --in tmux, wezterm, kitty, warp or print.`);
+    throw new Usage(`${bench === 'orca' ? 'Orca' : 'Paseo'} starts its own sessions, so --resume can't reopen one there. Use --in tmux, wezterm, kitty, warp, wt or print.`);
   const panes = seats.map((s) => ({ id: `seat-${s.letter.toLowerCase()}`, argv: agentArgv(s), seat: s, dir: s.dir ?? dir }));
   // A pane gets the workbench's environment, not this shell's: a data directory set only here goes with it.
   const data = input.env.PARLEY_DATA && platform !== 'win32' ? ['env', `PARLEY_DATA=${input.env.PARLEY_DATA}`] : [];
@@ -204,11 +271,28 @@ export function launchPlan(bench: Workbench, input: LaunchInput): Step[] {
       break;
     }
     case 'warp': {
-      const file = path.join(warpTabConfigDir(platform, input.home, input.env), `${name}.toml`);
+      const file = (platform === 'win32' ? path.win32 : path.posix).join(warpTabConfigDir(platform, input.home, input.env), `${name}.toml`);
       const all = [...panes.map((p) => ({ id: p.id, command: shellLine(p.argv, platform), dir: p.dir })), ...(watch ? [{ id: 'watch', command: shellLine(watch, platform) }] : [])];
       steps.push({ kind: 'write', file, text: warpTabConfig(name, room ? `Crossroom ${room}` : 'Crossroom', dir, all) });
       steps.push({ kind: 'open', url: `warp://tab_config/${name}` });
       steps.push({ kind: 'say', text: `Warp opens the tab "${name}" (${file}). It holds seat links: it is yours alone, and they stop working when the room ends.` });
+      break;
+    }
+    case 'wt': {
+      // Inside Windows Terminal, the window this command runs in; else a window of its own.
+      const argv = ['wt', '-w', input.env.WT_SESSION ? '0' : 'new'];
+      const pane = (verb: 'new-tab' | 'split-pane', title: string, paneDir: string, line: string) => {
+        if (verb === 'split-pane') argv.push(';');
+        argv.push(verb, '--title', wtArg(title), '--suppressApplicationTitle', '-d', wtArg(paneDir), ...wtPaneArgv(line).map(wtArg));
+      };
+      const label = room ? `Crossroom ${room}` : 'Crossroom';
+      panes.forEach((p, i) => pane(i === 0 ? 'new-tab' : 'split-pane', `${label} ${p.seat.letter} (${p.seat.agent})`, p.dir, psLine(p.argv)));
+      if (watch) {
+        // A pane gets Windows Terminal's environment, not this shell's: a data directory set only here goes with it.
+        const data = input.env.PARLEY_DATA ? `$env:PARLEY_DATA = ${psQuote(input.env.PARLEY_DATA)}; ` : '';
+        pane('split-pane', `${label} watch`, dir, data + psLine(watch));
+      }
+      steps.push({ kind: 'run', argv });
       break;
     }
     case 'orca':
@@ -225,7 +309,15 @@ export function launchPlan(bench: Workbench, input: LaunchInput): Step[] {
       break;
     case 'print':
       steps.push({ kind: 'say', text: 'Run each in a terminal of its own:' });
-      for (const p of panes) steps.push({ kind: 'say', text: `  Seat ${p.seat.letter}: cd ${shellLine([p.dir], platform)} && ${shellLine(p.argv, platform)}` });
+      // PowerShell on Windows: Windows PowerShell 5.1 reads no `&&`, and cmd reads no single quotes.
+      for (const p of panes)
+        steps.push({
+          kind: 'say',
+          text:
+            platform === 'win32'
+              ? `  Seat ${p.seat.letter} (PowerShell): Set-Location -LiteralPath ${psQuoteAlways(p.dir)}; ${psLine(p.argv)}`
+              : `  Seat ${p.seat.letter}: cd ${shQuote(p.dir)} && ${shellLine(p.argv, platform)}`,
+        });
       if (watch) steps.push({ kind: 'say', text: `  Follow the room: ${shellLine(watch, platform)}` });
       break;
   }
@@ -238,12 +330,14 @@ export function launchPlan(bench: Workbench, input: LaunchInput): Step[] {
 }
 
 /** The workbench this terminal belongs to, or `print` where Crossroom can start no pane. */
-export function workbenchOf(env: Record<string, string | undefined>, has: (bin: string) => boolean): Workbench {
+export function workbenchOf(env: Record<string, string | undefined>, has: (bin: string) => boolean, platform: NodeJS.Platform): Workbench {
   if (env.ORCA_PANE_KEY && has('orca')) return 'orca';
   if (env.TMUX && has('tmux')) return 'tmux';
   if (env.WEZTERM_PANE && has('wezterm')) return 'wezterm';
   if (env.KITTY_WINDOW_ID && env.KITTY_LISTEN_ON && has('kitten')) return 'kitty';
   if (env.TERM_PROGRAM === 'WarpTerminal') return 'warp';
+  // Windows Terminal ships with Windows 11: a tab of its own wherever it is installed, in this window when inside it.
+  if (platform === 'win32' && has('wt')) return 'wt';
   return 'print';
 }
 
@@ -318,7 +412,7 @@ export async function resumedSessions(args: Args, source?: SessionSource): Promi
 export function benchOf(args: Args): Workbench {
   const benchFlag = text(args.flags.in) ?? 'auto';
   if (benchFlag !== 'auto' && !(WORKBENCHES as readonly string[]).includes(benchFlag)) throw new Usage(`--in takes auto, ${WORKBENCHES.join(', ')}.`);
-  return benchFlag === 'auto' ? workbenchOf(process.env, (b) => resolveBin(b) !== null) : (benchFlag as Workbench);
+  return benchFlag === 'auto' ? workbenchOf(process.env, (b) => resolveBin(b) !== null, process.platform) : (benchFlag as Workbench);
 }
 
 /**
@@ -364,9 +458,9 @@ registerCommand({
   topic: 'start',
   synopsis: 'crossroom launch <seat link>...',
   usage: 'crossroom launch <seat link>... | -',
-  summary: 'agents into seats, a pane each: tmux, WezTerm, kitty, Warp, Orca or Paseo',
+  summary: 'agents into seats, a pane each: tmux, WezTerm, kitty, Warp, Windows Terminal, Orca or Paseo',
   more: [
-    { usage: '[--with claude|codex|gemini|opencode[,…]] [--in auto|tmux|wezterm|kitty|warp|orca|paseo|print]' },
+    { usage: '[--with claude|codex|gemini|opencode[,…]] [--in auto|tmux|wezterm|kitty|warp|wt|orca|paseo|print]' },
     { usage: '[--resume claude:<id>[,…]]', summary: 'reopen sessions already on this computer in the first seats (crossroom sessions lists them)' },
     { usage: '[--dir <dir>] [--dry-run]', summary: 'where the agents start; print the commands instead of running them' },
   ],

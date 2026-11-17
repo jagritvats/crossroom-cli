@@ -74,7 +74,7 @@ registerCommand({
           '',
           ...(r.recalled ? [`Brought in the recap${r.recalled.length === 1 ? '' : 's'} of ${r.recalled.map((id) => id.slice(0, 8)).join(', ')}, as one packet.`, ''] : []),
           `Watch it: ${r.watchUrl}`,
-          `Minutes once it ends: ${r.minutes}`,
+          `Recap once it ends: ${r.minutes}`,
         ].join('\n'),
       );
     return 0;
@@ -259,6 +259,7 @@ registerCommand({
 registerCommand({
   name: 'doctor',
   topic: 'computer',
+  usage: 'crossroom doctor [--port <n>]',
   summary: 'what this machine can run',
   order: 130,
   async run(args) {

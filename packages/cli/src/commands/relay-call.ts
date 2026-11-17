@@ -13,6 +13,7 @@
 import { API_TOKEN } from '@parley/shared/accounts';
 import { type Args, text, Usage } from '../cli.js';
 import { noteInstance } from '../client-version.js';
+import { reach } from '../reach.js';
 import { credentialFor, credentialsPath, DEFAULT_RELAY, relayOrigin } from './credentials.js';
 
 /** The variables an agent or a CI job sets in place of `crossroom login`. */
@@ -37,18 +38,12 @@ const saidBy = (parsed: unknown, status: number) =>
 
 /** A request to the relay with the account's token: the status, and the body as the relay sent it. */
 async function send(relay: string, token: string, fetchImpl: FetchLike, method: string, path: string, body: unknown, accept: string): Promise<{ res: Response; raw: string }> {
-  let res: Response;
-  try {
-    res = await fetchImpl(`${relay}${path}`, {
-      method,
-      headers: { accept, authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      redirect: 'error',
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch (e) {
-    throw new Usage(`Could not reach ${relay}: ${(e as Error).name === 'TimeoutError' ? 'it did not answer in 15 seconds' : 'the request failed'}.`);
-  }
+  const res = await reach(fetchImpl, `${relay}${path}`, {
+    method,
+    headers: { accept, authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    redirect: 'error',
+  });
   return { res, raw: await res.text() };
 }
 

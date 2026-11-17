@@ -42,7 +42,7 @@ import type { ReviewQueue } from './review.js';
 // ---------------------------------------------------------------- the call, as the policy reads it
 
 /** Every operation the proxy checks before forwarding: eight of the ten, in `TOOL_NAMES` order, then `record` and a project room's `work`, `submit` and `report`. */
-export const GATED_OPS: readonly GatedOp[] = ['join', 'say', 'request_context', 'decline_context', 'share_context', 'claim', 'position', 'finish', 'record', 'work', 'submit', 'report', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'file', 'update', 'verify', 'autonomy'];
+export const GATED_OPS: readonly GatedOp[] = ['join', 'say', 'request_context', 'decline_context', 'share_context', 'claim', 'position', 'finish', 'record', 'work', 'submit', 'report', 'plan', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'file', 'update', 'verify', 'autonomy'];
 export const isGatedOp = (op: unknown): op is GatedOp => typeof op === 'string' && (GATED_OPS as readonly string[]).includes(op);
 
 /** The most string fields, and the deepest nesting, a call may carry and still be read. */

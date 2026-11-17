@@ -13,7 +13,7 @@ import type { ContextKind } from '@parley/shared';
 import type { PolicyVerdict, SeatPolicy } from '@parley/shared/runner';
 
 /** The operations the proxy checks before they leave the machine. */
-export type GatedOp = 'share_context' | 'say' | 'claim' | 'position' | 'request_context' | 'decline_context' | 'finish' | 'join' | 'record' | 'work' | 'submit' | 'report' | 'board_set' | 'declare_tool' | 'call_tool' | 'tool_result' | 'open_room' | 'file' | 'update' | 'verify' | 'autonomy';
+export type GatedOp = 'share_context' | 'say' | 'claim' | 'position' | 'request_context' | 'decline_context' | 'finish' | 'join' | 'record' | 'work' | 'submit' | 'report' | 'plan' | 'board_set' | 'declare_tool' | 'call_tool' | 'tool_result' | 'open_room' | 'file' | 'update' | 'verify' | 'autonomy';
 
 /** One outbound call, with every field an agent could put text in. */
 export interface OutboundCall {

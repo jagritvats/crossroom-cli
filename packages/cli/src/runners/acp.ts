@@ -140,7 +140,7 @@ export interface PermissionVerdict {
   why: string;
 }
 
-const SEAT_TOOLS = new Set(['join', 'status', 'say', 'wait', 'request_context', 'decline_context', 'share_context', 'claim', 'position', 'finish', 'record', 'work', 'submit', 'report', 'board', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'subrooms', 'context', 'items', 'file', 'update', 'verify', 'pass']);
+const SEAT_TOOLS = new Set(['join', 'status', 'say', 'wait', 'request_context', 'decline_context', 'share_context', 'claim', 'position', 'finish', 'record', 'work', 'submit', 'report', 'plan', 'progress', 'board', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'subrooms', 'context', 'items', 'file', 'update', 'verify', 'pass']);
 /** What a read-only git command may be: one of three subcommands, no shell, nothing that writes or reaches outside the checkout. */
 const GIT_READ = /^git (log|show|diff)(?: [^;&|<>`$(){}\\\r\n'"*?!#]*)?$/;
 /** What turns a read into a write or a reach outside the checkout: an output file, a helper, another repository, a home directory. */

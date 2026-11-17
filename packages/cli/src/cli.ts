@@ -44,6 +44,8 @@ import {
   renderDeclined,
   renderFinished,
   renderRecord,
+  renderPlan,
+  renderProgress,
   renderReported,
   renderSubmitted,
   renderWork,
@@ -61,6 +63,7 @@ import { type Command, commandHelpLines, commandSwitches, findCommand, helpLines
 import type { MemoryEntry } from './commands/memory-notes.js';
 import { SEAT_FINISHED } from '@parley/shared/protocol';
 import { type RunnerOptions, runnerAvailability } from './runners/hosted.js';
+import { fetchFailedLine, isFetchFailure } from './net-errors.js';
 import { verifyMinutes } from './signing.js';
 
 declare const __PARLEY_VERSION__: string | undefined;
@@ -97,7 +100,7 @@ export interface Args {
  * Flags that never take a value, with those registered commands declare (`Command.switches`).
  * Every other `--name` takes the next word, or `--name=value`.
  */
-const SWITCHES = new Set(['no-open', 'json', 'no-start', 'digest', 'wait', 'help', 'version', 'list', 'print', 'forget']);
+const SWITCHES = new Set(['no-open', 'json', 'no-start', 'digest', 'wait', 'help', 'version', 'list', 'print', 'forget', 'debug']);
 
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = [];
@@ -127,6 +130,7 @@ export function parseArgs(argv: string[]): Args {
     } else positional.push(a);
   }
   if (flags.host === CODEX && flags.session === undefined) flags.session = codexSession();
+  if (flags.host === CLAUDE && flags.session === undefined) flags.session = claudeSession();
   const command = positional.shift() ?? 'serve';
   return { command, positional, flags, ...(Object.keys(values).length ? { values } : {}) };
 }
@@ -144,6 +148,28 @@ const CODEX = 'codex';
 function codexSession(): string {
   const id = process.env.CODEX_SESSION_ID?.trim();
   if (!id) throw new Usage('--host codex takes the session from CODEX_SESSION_ID, which Codex sets in the commands it runs. It is not set here: run this from inside a Codex session, or pass --session <id>.');
+  return id;
+}
+
+/**
+ * `--host claude`: the command runs inside a Claude Code session. Claude Code exports
+ * `CLAUDE_CODE_SESSION_ID` to its Bash tool and hooks, the same id its skills substitute for
+ * `${CLAUDE_SESSION_ID}`, so the seat a skill recorded with `--session` is found by it. Only the
+ * variable of the running process counts: an argument can name any session, the variable only the
+ * one this command runs in. (`serve --host <address>` is never `claude` either.)
+ */
+const CLAUDE = 'claude';
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** The Claude Code session this process runs in, from `CLAUDE_CODE_SESSION_ID`, or null. */
+export function claudeSessionOf(env: NodeJS.ProcessEnv = process.env): string | null {
+  const id = env.CLAUDE_CODE_SESSION_ID?.trim();
+  return id && SESSION_ID.test(id) ? id : null;
+}
+
+function claudeSession(env: NodeJS.ProcessEnv = process.env): string {
+  const id = claudeSessionOf(env);
+  if (!id) throw new Usage('--host claude takes the session from CLAUDE_CODE_SESSION_ID, which Claude Code sets in the commands it runs. It is not set here: run this from inside a Claude Code session, or pass --session <id>.');
   return id;
 }
 
@@ -568,22 +594,51 @@ export async function leaveSeat(args: Args, cwd = process.cwd()): Promise<string
 
 // ---------------------------------------------------------------- `crossroom op`: a seat's calls, without curl
 
+/** The agent host a `crossroom op` runs under, which decides whose seat it speaks for. */
+export type OpHost = 'codex' | 'claude';
+
 /**
- * The seat `crossroom op` speaks for: the one this Codex session holds (`--host codex`), and no
- * other. Never one taken from the directory, as `status` may: every call is the seat speaking, or
- * moving what it has been shown.
- *
- * The Codex rules file lets `crossroom op` run outside the sandbox unasked, and a rule matches a
- * prefix, so whatever `op` accepts, an agent led on by the room can run without a prompt. A
- * `--seat <link>` would send a call, and any file `key@<file>` names, to any host; a `--session`
- * would speak for another session's seat, in another room. So `op` takes neither: the seat's host
- * came from `crossroom seat` or `crossroom ask`, which Codex asks about first.
+ * The host `crossroom op` runs under: Codex with `--host codex`, as always; Claude Code with
+ * `--host claude`, or with no `--host` at all when Claude Code's own variable says so
+ * (`CLAUDE_CODE_SESSION_ID`), which is what lets the briefing's calls be bare `crossroom op <call>`.
  */
-export function opSeat(args: Args): string {
+export function opHost(args: Args, env: NodeJS.ProcessEnv = process.env): OpHost {
+  if (args.flags.host === CODEX) return 'codex';
+  if (args.flags.host === CLAUDE) return 'claude';
+  if (args.flags.host === undefined && claudeSessionOf(env)) return 'claude';
+  throw new Usage(
+    '`crossroom op` runs inside an agent session, for the seat that session holds: in Codex add --host codex; in Claude Code it reads CLAUDE_CODE_SESSION_ID, which is not set here.',
+  );
+}
+
+/**
+ * The seat `crossroom op` speaks for: the one this agent session holds, and no other. Never one
+ * taken from the directory, as `status` may: every call is the seat speaking, or moving what it has
+ * been shown.
+ *
+ * An approval rule matches a prefix, so whatever `op` accepts, an agent led on by the room can run
+ * without a prompt once its user allowed `crossroom op`: Codex's rules file
+ * (plugins/crossroom/codex/crossroom.rules) and, since the owner's decision of 2026-11-17, Claude
+ * Code's one rule `Bash(crossroom op:*)`, which spares a Claude Code seat a curl approval on every
+ * call and Git Bash's curl mangling non-ASCII text. A `--seat <link>` would send a call, and any
+ * file `key@<file>` names, to any host; a `--session` would speak for another session's seat, in
+ * another room. So `op` takes neither: the seat is the one recorded for the session the host's own
+ * variable names (CODEX_SESSION_ID, CLAUDE_CODE_SESSION_ID), and its host came from a command the
+ * user approved (`crossroom seat`, `crossroom new`, `crossroom ask`).
+ */
+export function opSeat(args: Args, env: NodeJS.ProcessEnv = process.env): string {
+  const host = opHost(args, env);
   if (args.flags.seat !== undefined)
-    throw new Usage('`crossroom op` speaks only for the seat this session holds, and takes no --seat. `crossroom seat <link> --host codex` takes a seat for this session.');
-  if (args.flags.host !== CODEX) throw new Usage('`crossroom op` runs inside a Codex session, for the seat that session holds: add --host codex.');
-  const session = ownCodexSession(args, '`crossroom op`');
+    throw new Usage(
+      `\`crossroom op\` speaks only for the seat this session holds, and takes no --seat. \`crossroom seat <link>${host === 'codex' ? ' --host codex' : ' --host claude'}\` takes a seat for this session.`,
+    );
+  let session: string;
+  if (host === 'codex') session = ownCodexSession(args, '`crossroom op`');
+  else {
+    session = claudeSession(env);
+    if (args.flags.session !== undefined && text(args.flags.session) !== session)
+      throw new Usage('`crossroom op` is for the seat this Claude Code session holds, and takes no --session.');
+  }
   const held = sessionSeats().find((s) => s.session === session);
   if (!held)
     throw new Usage('This session holds no seat. `crossroom seat <link>` with this session takes one; `crossroom seats` lists the seats this machine knows.');
@@ -591,20 +646,25 @@ export function opSeat(args: Args): string {
 }
 
 /**
- * The briefing's calls, as `crossroom op` makes them: plain words, one command each, so a Codex rule
+ * The briefing's calls, as `crossroom op` makes them: plain words, one command each, so one rule
  * that allows `crossroom op` covers every one and no call needs `curl`, a variable or a redirection.
- * No link in them either: `seat` names the seat (`--host codex`), and the token stays out of every
- * command the agent writes.
+ * No link in them either: `seat` names the seat (`--host codex`), or nothing does (Claude Code,
+ * whose session the command reads itself), and the token stays out of every command the agent writes.
  */
 export function opCalls(seat: string): string {
-  const op = (rest: string) => `crossroom op ${rest} ${seat}`;
+  const op = (rest: string) => (seat ? `crossroom op ${rest} ${seat}` : `crossroom op ${rest}`);
+  const claude = !seat;
   return [
     '## Calls',
-    `Every call is \`crossroom op <call>\` with \`key=value\` arguments, run on its own: never chained, and with no \`$VAR\` in it. \`${seat}\` names your seat. Every call prints text; read it.`,
+    claude
+      ? 'Every call is `crossroom op <call>` with `key=value` arguments, run on its own: never chained, and with no `$VAR` in it. It speaks for the seat this session holds, so no call names it. Every call prints text; read it.'
+      : `Every call is \`crossroom op <call>\` with \`key=value\` arguments, run on its own: never chained, and with no \`$VAR\` in it. \`${seat}\` names your seat. Every call prints text; read it.`,
     '```sh',
     '# say something',
     op('say text="Your message here."'),
-    '# wait for the other side (blocks up to 45 s; returns new activity or "(no new activity)")',
+    claude
+      ? `# wait for the others (holds up to ${WAIT_FOR_DEFAULT_S} s, riding out network blips; returns new activity or "Nothing yet")`
+      : '# wait for the other side (blocks up to 45 s; returns new activity or "(no new activity)")',
     op('wait'),
     '# ask for something specific you need',
     op('request_context what="the zod schema line for customerId" why="to check nullability"'),
@@ -619,9 +679,23 @@ export function opCalls(seat: string): string {
     '# done',
     op('finish summary="What was established, what moved, what is unresolved."'),
     '```',
-    "stance: support | oppose | uncertain | insufficient_evidence. Put text holding `$`, a backtick or a double quote in single quotes. Long text: `key@<file>` reads it from a file, and `key@-` from stdin.",
+    claude
+      ? "stance: support | oppose | uncertain | insufficient_evidence. Put text holding `$`, a backtick or a double quote in single quotes. Long or several-line text: `key@<file>` reads it from a file, and `key@-` from stdin (`sed -n '12,20p' src/schema.ts | crossroom op share_context kind=code title=\"checkout schema\" source=\"src/schema.ts:12-20\" body@-`); either is read as UTF-8 whatever the console's code page.\nIs your user asked to approve each call? Give them this Claude Code rule, which allows them all: `Bash(crossroom op:*)`."
+      : "stance: support | oppose | uncertain | insufficient_evidence. Put text holding `$`, a backtick or a double quote in single quotes. Long text: `key@<file>` reads it from a file, and `key@-` from stdin.",
   ].join('\n');
 }
+
+/** The `seat` argument of `opCalls` for a host: Codex names itself, Claude Code is read from its session. */
+export const opSeatFlag = (host: OpHost): string => (host === 'codex' ? '--host codex' : '');
+
+/**
+ * How long a Claude Code seat's `crossroom op wait` holds when `--for` names nothing: `crossroom
+ * wait`'s own default (commands/wait.ts `WAIT_FOR_DEFAULT_S`, which a test holds this to), under the
+ * 120 s after which Claude Code moves a shell command to the background. Not imported, because
+ * importing a command file registers its command, and the help's order is the registry's.
+ */
+const WAIT_FOR_DEFAULT_S = 100;
+export const OP_WAIT_FOR_S = WAIT_FOR_DEFAULT_S;
 
 type Renderers = { [K in OpName]: (d: OpData[K], c: RoomCipher | null) => Promise<string> | string };
 
@@ -630,7 +704,7 @@ type Renderers = { [K in OpName]: (d: OpData[K], c: RoomCipher | null) => Promis
  * the server answers exactly as a call that never existed for a seat its room does not offer it to.
  * The helper's own `OPS` stays the ten: a project room is never end-to-end.
  */
-const CALLS: readonly OpName[] = [...OPS, 'record', 'work', 'submit', 'report', 'board', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'subrooms', 'context', 'items', 'file', 'update', 'verify', 'pass', 'autonomy'];
+const CALLS: readonly OpName[] = [...OPS, 'record', 'work', 'submit', 'report', 'plan', 'progress', 'board', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'subrooms', 'context', 'items', 'file', 'update', 'verify', 'pass', 'autonomy'];
 
 export interface OpResult {
   code: number;
@@ -638,24 +712,47 @@ export interface OpResult {
   err: string;
 }
 
+/** What `seatOp` is handed besides the command line: the environment it reads its session from, and a way to stop. */
+export interface OpOptions {
+  env?: NodeJS.ProcessEnv;
+  /** Aborted to stop a held `wait` at once (Ctrl-C, SIGTERM): the request in flight is aborted, so the server rewinds. */
+  signal?: AbortSignal;
+}
+
 /**
  * `crossroom op <call> [key=value | key@file | key@-]…`: one of the seat's calls, as the seat helper
  * (`packages/seat`) makes it, with its argument grammar and its encryption for an end-to-end room,
  * and the text the server renders. The briefing's calls are `crossroom op` ones (`opCalls`).
+ *
+ * A Claude Code seat's `wait` (or any `wait` given `--for`) is `crossroom wait`'s loop
+ * (commands/wait.ts `waitSeat`): asked again until something arrives or `--for` runs out, a deploy's
+ * 502 or the edge's bare 404 retried quietly, and a hang-up aborting the request so the server puts
+ * the delivery cursor back. Codex's stays the one call it always was, unless given `--for`. An
+ * end-to-end room's `wait` is the one call too, since the loop cannot open what arrives.
  */
-export async function seatOp(args: Args, io: SeatIo, fetchImpl: typeof fetch = fetch): Promise<OpResult> {
+export async function seatOp(args: Args, io: SeatIo, fetchImpl: typeof fetch = fetch, opts: OpOptions = {}): Promise<OpResult> {
+  const env = opts.env ?? process.env;
   const [call, ...tokens] = args.positional;
-  if (!call) throw new Usage(`Usage: crossroom op <call> [key=value | key@file | key@-]... --host codex\nCalls: ${CALLS.join(', ')}.`);
+  if (!call) throw new Usage(`Usage: crossroom op <call> [key=value | key@file | key@-]... [--host codex]\nCalls: ${CALLS.join(', ')}.`);
   if (!CALLS.includes(call as OpName)) throw new Usage(`There is no call "${call}". Calls: ${CALLS.join(', ')}.`);
   const name = call as OpName;
+  const host = opHost(args, env);
+  const forGiven = args.flags.for;
+  if (forGiven !== undefined && name !== 'wait') throw new Usage('--for is for `crossroom op wait` only.');
+  if (forGiven === true) throw new Usage('--for takes a number of seconds.');
   let link: SeatLink;
   let fields: Record<string, unknown>;
   try {
-    link = parseLink(opSeat(args));
+    link = parseLink(opSeat(args, env));
     fields = await seatArgs(tokens, io);
   } catch (e) {
     if (e instanceof UsageError) throw new Usage(e.message);
     throw e;
+  }
+  if (name === 'wait' && !link.key && (host === 'claude' || forGiven !== undefined)) {
+    const { waitFor, waitSeat } = await import('./commands/wait.js');
+    const forS = waitFor(forGiven);
+    return waitSeat(link.base, { forS, signal: opts.signal, fetchImpl: (u, i) => fetchImpl(u, i), again: '`crossroom op wait`' });
   }
   const cipher = link.key ? await RoomCipher.fromKey(link.key).catch(() => null) : null;
   if (link.key && !cipher) throw new Usage("The #e= part of this seat's link is not a Crossroom room key.");
@@ -678,7 +775,7 @@ export async function seatOp(args: Args, io: SeatIo, fetchImpl: typeof fetch = f
   if (body.e2ee && !cipher)
     return { code: 1, out: '', err: "This room is end-to-end encrypted, and the seat's link has no key: record the whole link, with its #e= part." };
   const render: Renderers = {
-    join: async (d, c) => briefing(c ? await c.join(d) : d, { calls: opCalls('--host codex') }),
+    join: async (d, c) => briefing(c ? await c.join(d) : d, { calls: opCalls(opSeatFlag(host)) }),
     status: async (d, c) => renderStatus(c ? await c.status(d) : d),
     wait: async (d, c) => renderWait(c ? await c.wait(d) : d),
     say: renderSay,
@@ -693,6 +790,8 @@ export async function seatOp(args: Args, io: SeatIo, fetchImpl: typeof fetch = f
     work: (d) => renderWork(d),
     submit: (d) => renderSubmitted(d),
     report: (d) => renderReported(d),
+    plan: (d) => renderPlan(d),
+    progress: (d) => renderProgress(d),
     // A room with a board's: in `CALLS`, never an end-to-end room's.
     board: (d) => renderBoard(d),
     board_set: (d) => renderBoardSet(d),
@@ -826,7 +925,9 @@ interface RunnerInfo {
 /** Runners in the order `ask` prefers them: the confined one first (SECURITY.md, runner table). */
 const PREFERRED = ['claude', 'codex', 'grok'];
 
-export function pickRunner(runners: RunnerInfo[], wanted?: string): RunnerInfo {
+export function pickRunner(all: RunnerInfo[], wanted?: string): RunnerInfo {
+  // `api` is Crossroom's own agent, seated by an instance on its key: not an agent CLI this machine starts.
+  const runners = all.filter((x) => x.id !== 'api');
   if (wanted) {
     const r = runners.find((x) => x.id === wanted);
     if (!r) throw new Usage(`There is no runner called "${wanted}". Crossroom can host: ${runners.map((x) => x.id).join(', ')}.`);
@@ -1001,6 +1102,15 @@ export function pickRoom(args: Args): SavedRoom {
 
 const owned = (room: SavedRoom, extra: Record<string, string> = {}) => ({ 'x-parley-owner': room.owner, accept: 'application/json', ...extra });
 
+/**
+ * A request as a room's owner: the token in `x-parley-owner`, and never a redirect, since fetch
+ * keeps a header like that one when it follows a redirect to another host. Every owner call here
+ * goes through it.
+ */
+export function ownerFetch(room: SavedRoom, url: string, init: { method?: string; body?: string; headers?: Record<string, string> } = {}): Promise<Response> {
+  return fetch(url, { method: init.method ?? 'GET', headers: owned(room, init.headers), ...(init.body === undefined ? {} : { body: init.body }), redirect: 'error' });
+}
+
 /** The private link: the room's page with its key in the fragment, as the web's Copy private link makes it. */
 export const privateLink = (room: SavedRoom) => `${room.base}/s/${encodeURIComponent(room.id)}#k=${encodeURIComponent(room.owner)}`;
 
@@ -1031,6 +1141,8 @@ export async function roomRows(): Promise<RoomRow[]> {
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify({ rooms: mine.slice(i, i + 50).map((r) => ({ id: r.id, owner: r.owner })) }),
+          // The body holds owner tokens, and a 307 or 308 would send it on.
+          redirect: 'error',
         });
         if (!res.ok) continue;
         for (const s of (await res.json()) as { id: string; status: string }[]) found.set(s.id, s);
@@ -1082,9 +1194,9 @@ export function roomsText(rows: RoomRow[]): string {
 export async function endRoom(args: Args): Promise<string> {
   const room = pickRoom(args);
   const outcome = text(args.flags.outcome);
-  const res = await fetch(`${room.base}/api/sessions/${encodeURIComponent(room.id)}/end`, {
+  const res = await ownerFetch(room, `${room.base}/api/sessions/${encodeURIComponent(room.id)}/end`, {
     method: 'POST',
-    headers: owned(room, { 'content-type': 'application/json' }),
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(outcome ? { outcome } : {}),
   });
   if (!res.ok) throw new Usage(`Could not end room ${room.id}: ${await errorOf(res)}`);
@@ -1100,19 +1212,19 @@ export async function shareRoom(args: Args): Promise<string> {
   const at = `${room.base}/api/sessions/${encodeURIComponent(room.id)}/shares`;
   const revoke = text(args.flags.revoke);
   if (revoke) {
-    const res = await fetch(`${at}/${encodeURIComponent(revoke)}`, { method: 'DELETE', headers: owned(room) });
+    const res = await ownerFetch(room, `${at}/${encodeURIComponent(revoke)}`, { method: 'DELETE' });
     if (!res.ok) throw new Usage(`Could not revoke share ${revoke}: ${await errorOf(res)}`);
     return `Revoked. That link now opens nothing.`;
   }
   if (args.flags.list) {
-    const res = await fetch(at, { headers: owned(room) });
+    const res = await ownerFetch(room, at);
     if (!res.ok) throw new Usage(`Could not list the room's share links: ${await errorOf(res)}`);
     const shares = (await res.json()) as { id: string; createdAt: string; revokedAt: string | null; opens?: number }[];
     const live = shares.filter((s) => !s.revokedAt);
     if (!live.length) return 'This room has no live share links.';
     return live.map((s) => `  ${s.id}  made ${s.createdAt.slice(0, 16).replace('T', ' ')}`).join('\n');
   }
-  const res = await fetch(at, { method: 'POST', headers: owned(room) });
+  const res = await ownerFetch(room, at, { method: 'POST' });
   if (!res.ok) throw new Usage(`Could not share room ${room.id}: ${await errorOf(res)}`);
   const made = (await res.json()) as { url: string; share: { id: string } };
   return [
@@ -1127,17 +1239,16 @@ export async function shareRoom(args: Args): Promise<string> {
 export async function minutes(args: Args, say: (line: string) => void): Promise<string> {
   const room = pickRoom(args);
   const id = room.id;
-  const headers = { 'x-parley-owner': room.owner };
   if (args.flags.wait) {
     say('Waiting for the room to end…');
     for (;;) {
-      const res = await fetch(`${room.base}/api/sessions/${encodeURIComponent(id)}/wait`, { headers });
+      const res = await ownerFetch(room, `${room.base}/api/sessions/${encodeURIComponent(id)}/wait`);
       if (!res.ok) throw new Usage(`Could not wait on room ${id}: ${await errorOf(res)}`);
       if (((await res.json()) as { status?: string }).status === 'ended') break;
     }
   }
   const style = args.flags.digest ? '?style=digest' : '';
-  const res = await fetch(`${room.base}/api/sessions/${encodeURIComponent(id)}/minutes${style}`, { headers });
+  const res = await ownerFetch(room, `${room.base}/api/sessions/${encodeURIComponent(id)}/minutes${style}`, { headers: { accept: 'text/markdown' } });
   if (!res.ok) throw new Usage(`Could not read the minutes of room ${id}: ${await errorOf(res)}`);
   return res.text();
 }
@@ -1184,11 +1295,14 @@ export async function verify(args: Args): Promise<{ ok: boolean; lines: string[]
 
 // ---------------------------------------------------------------- doctor
 
-export async function doctor(args: Args): Promise<{ lines: string[]; ok: boolean }> {
+export async function doctor(args: Args, script: string | undefined = process.argv[1]): Promise<{ lines: string[]; ok: boolean }> {
   const lines: string[] = [];
   let ok = true;
   const row = (mark: 'ok' | '--' | '!!', label: string, detail: string) => lines.push(`  ${mark.padEnd(3)} ${label.padEnd(14)} ${detail}`);
 
+  const { staleBuild, staleBuildLine } = await import('./client-version.js');
+  const stale = staleBuild(VERSION, script);
+  row(stale ? '!!' : 'ok', 'Crossroom', stale ? staleBuildLine(stale) : VERSION);
   row('ok', 'Node', `${process.versions.node} (needs 22.13 or newer)`);
   try {
     new DatabaseSync(':memory:').close();
@@ -1353,6 +1467,11 @@ export async function run(argv: string[]): Promise<number> {
     }
     if (args.flags.version) {
       console.log(VERSION);
+      // A linked checkout whose build is older than its source says so on stderr, so stdout stays
+      // the bare version for scripts.
+      const { staleBuild, staleBuildLine } = await import('./client-version.js');
+      const stale = staleBuild(VERSION);
+      if (stale) err(staleBuildLine(stale));
       return 0;
     }
     if (args.command === 'help') {
@@ -1404,7 +1523,19 @@ export async function run(argv: string[]): Promise<number> {
       err(e.message);
       return 2;
     }
-    err(String((e as Error)?.stack ?? e));
+    err(unexpectedError(e, { debug: argv.includes('--debug') }));
     return 1;
   }
+}
+
+/**
+ * What an error no command expected prints: one line, its stack only with `--debug` or
+ * `CROSSROOM_DEBUG=1`. A fetch that never got an answer is said as one (reach.ts), since that is
+ * a network to check, not a bug.
+ */
+export function unexpectedError(e: unknown, { debug = false, env = process.env }: { debug?: boolean; env?: NodeJS.ProcessEnv } = {}): string {
+  if (debug || env.CROSSROOM_DEBUG === '1') return String((e as Error)?.stack ?? e);
+  if (isFetchFailure(e)) return `${fetchFailedLine(e, env)} (--debug shows where.)`;
+  const message = String((e as Error)?.message ?? e).split('\n')[0]!.trim() || 'an unknown error';
+  return `crossroom stopped: ${message}. Run it again with --debug (or CROSSROOM_DEBUG=1) to see where, and report it at https://github.com/jagritvats/crossroom-cli/issues if it keeps happening.`;
 }

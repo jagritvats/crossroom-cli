@@ -32,7 +32,7 @@ const MODEL_MAX = 200;
 /** `SessionMode`'s values, copied: index.ts builds zod schemas when it loads. */
 export const PANEL_MODES: readonly SessionMode[] = ['free', 'duel', 'reconcile', 'review', 'handoff', 'custom'];
 /** `HostedRunner`'s values, copied for the same reason. */
-export const PANEL_RUNNERS: readonly HostedRunner[] = ['claude', 'codex', 'agy', 'grok'];
+export const PANEL_RUNNERS: readonly HostedRunner[] = ['claude', 'codex', 'agy', 'grok', 'api'];
 
 export interface PanelHosted {
   runner: HostedRunner;

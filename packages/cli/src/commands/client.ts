@@ -39,3 +39,7 @@ import './background.js';
 // The agent sessions on this computer, found without a host, to reopen in a room.
 import './sessions.js';
 import './wake.js';
+// Crossroom's agent: the account's credit for it (beta).
+import './credit.js';
+// A seat's wait asked again until something arrives, with blips retried: what an agent hand-polled with curl.
+import './wait.js';

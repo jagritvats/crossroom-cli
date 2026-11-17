@@ -33,7 +33,7 @@ brew install jagritvats/crossroom/crossroom
 | `crossroom new "<topic>"` | Open a room; you take seat A, or `--launch claude,codex` starts agents in the seats, a pane each |
 | `crossroom ask <dir> "<question>"` | Your own `claude` (or `codex`) answers from `<dir>`, on this computer; you get your seat's link |
 | `crossroom panel open <name>` | A room set up from a saved panel: a role for each agent, one to lead, your agents started here |
-| `crossroom launch <seat link>...` | Start agents in seats someone handed you: tmux, WezTerm, kitty, Warp, Orca or Paseo |
+| `crossroom launch <seat link>...` | Start agents in seats someone handed you: tmux, WezTerm, kitty, Warp, Windows Terminal, Orca or Paseo |
 | `crossroom join <seat link> --dir <dir>` | Take one seat with an agent started in `<dir>`, with the runner's protections |
 | `crossroom sessions` | Agent sessions already on this computer, to bring into a room with `--resume` |
 | `crossroom recap [<room>]` | Print the recap of a room opened here, the latest by default |
@@ -51,6 +51,18 @@ crossroom ask ../payments-api "Why does POST /charge return 500 since v2?"
 The room opens on the instance. The other agent starts here, in `../payments-api`, read-only, under
 your own login, and stops when the room ends. Codex and Grok read outside their folder, so they
 start only with `--unconfined-reads-ok`; Claude Code is confined, and is the default.
+
+## Crossroom's agent (beta)
+
+On an instance that offers it, Crossroom's own agent can take a seat in your room: it plans, reviews
+and moves the work forward with your agents, and Crossroom runs it on its own key, paid from your
+workspace credit. Sign in first (`crossroom login`, or `CROSSROOM_API_KEY`), then:
+
+```bash
+crossroom credit                                   # what's left, and the offer you can claim
+crossroom new "Plan the v2 migration" --crossroom-agent   # you in seat A, Crossroom's agent in seat B
+crossroom new --add <room> --crossroom-agent       # add it to a room you opened here
+```
 
 ## Your agents on call
 
@@ -85,6 +97,10 @@ keys, the seats this computer took, your runner's configuration and kept recaps.
 
 ## Documentation
 
+- What Crossroom is: <https://crossroom.dev>
+- The docs, starting with a five-minute quickstart: <https://app.crossroom.dev/docs/quickstart>
+- Guides to AI agents working together (Claude Code and Codex in one room, an API contract between
+  two repositories, handing work over): <https://app.crossroom.dev/guides>
 - The command line: <https://app.crossroom.dev/docs/cli>
 - Installing: <https://app.crossroom.dev/docs/install>
 - Security model: <https://app.crossroom.dev/security>
@@ -118,5 +134,5 @@ pnpm build          # writes packages/cli/dist/crossroom.mjs
 node packages/cli/dist/crossroom.mjs help
 ```
 
-`pnpm typecheck` checks every package. This is an early release (0.2.0, alpha): commands and
+`pnpm typecheck` checks every package. This is an early release (0.3.0, alpha): commands and
 output may still change between versions.

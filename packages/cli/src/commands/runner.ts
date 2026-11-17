@@ -33,7 +33,8 @@ import path from 'node:path';
 import { RUNNER_TOKEN } from '@parley/shared/runner';
 import { oneLine } from '@parley/shared/text';
 import { ADAPTERS, resolveBin } from '../runners/adapters.js';
-import { runnerAvailability } from '../runners/hosted.js';
+import { API_LABEL, runnerAvailability } from '../runners/hosted.js';
+import { apiSeatKey } from '../runner/api-seat.js';
 import { ConfigError, configPath, flagValues, globList, loadConfig, type RunnerConfig, runnerHome, saveConfig, seatDir, seatFromFlags } from '../runner/config.js';
 import { adoptRunnerToken, ConnectError, connectRunner } from '../runner/connect.js';
 import type { RunningEffects } from '../runner/effects/index.js';
@@ -196,7 +197,7 @@ export function add(home: string, spec: string, args: Pick<Args, 'flags'>, say: 
   cfg.seats.push({ ...seat, dir: abs });
   save(home, cfg);
   say(
-    `Added the seat ${label}: ${ADAPTERS[seat.runtime].label} answering from ${abs}${seat.runtime === 'claude' ? '' : ' (its reads are not confined to the checkout, and askers are told so)'}. Start the runner (\`crossroom runner\`) to register it; it prints the seat's ask link.`,
+    `Added the seat ${label}: ${runtimeLabel(seat.runtime)} answering from ${abs}${seat.runtime === 'claude' || seat.runtime === 'api' ? '' : ' (its reads are not confined to the checkout, and askers are told so)'}. Start the runner (\`crossroom runner\`) to register it; it prints the seat's ask link.`,
   );
   return cfg;
 }
@@ -218,12 +219,15 @@ function remove(home: string, label: string | undefined, say: (l: string) => voi
   say(`Removed ${label}. Its ask link dies once the runner declares its seats again.`);
 }
 
+/** What a seat's runtime is called: a CLI's own name, or Crossroom's agent for `api`. */
+const runtimeLabel = (rt: RunnerConfig['seats'][number]['runtime']): string => (rt === 'api' ? API_LABEL : ADAPTERS[rt].label);
+
 export function seatsText(cfg: RunnerConfig, home: string): string {
   if (!cfg.seats.length) return `The runner "${cfg.name}" (${cfg.relay}) has no seats. Add one: crossroom runner add <label>=<dir>`;
   const rows = cfg.seats.map((s) =>
     [
       s.label,
-      ADAPTERS[s.runtime].label + (s.runtime === 'claude' ? '' : ' (unconfined reads)'),
+      runtimeLabel(s.runtime) + (s.runtime === 'claude' || s.runtime === 'api' ? '' : ' (unconfined reads)'),
       s.paused ? 'paused' : 'active',
       `${s.checkout ?? 'worktree'}${s.ref ? ` @ ${s.ref}` : ''}`,
       seatDir(s, home),
@@ -250,11 +254,16 @@ export async function doctorLines(home: string): Promise<{ lines: string[]; ok: 
   for (const s of cfg?.seats ?? []) {
     const d = seatDir(s, home);
     const cli = clis.find((c) => c.id === s.runtime);
-    const problems = [
-      !existsSync(d) ? 'its directory is missing' : null,
-      existsSync(d) && (s.checkout ?? 'worktree') === 'worktree' && !(await isGitRepo(d)) ? 'its directory is not a git repository (set checkout: live)' : null,
-      !cli?.available ? `${ADAPTERS[s.runtime].label} is not available` : null,
-    ].filter(Boolean);
+    // An `api` seat checks out nothing and starts no CLI: it needs only its key in this environment.
+    const problems = (
+      s.runtime === 'api'
+        ? [apiSeatKey(process.env) ? null : 'no Anthropic API key in PARLEY_HOUSE_ANTHROPIC_KEY or ANTHROPIC_API_KEY']
+        : [
+            !existsSync(d) ? 'its directory is missing' : null,
+            existsSync(d) && (s.checkout ?? 'worktree') === 'worktree' && !(await isGitRepo(d)) ? 'its directory is not a git repository (set checkout: live)' : null,
+            !cli?.available ? `${runtimeLabel(s.runtime)} is not available` : null,
+          ]
+    ).filter(Boolean);
     if (problems.length) ok = false;
     lines.push(`seat ${s.label}: ${problems.length ? problems.join('; ') : 'ready'}`);
   }
@@ -430,7 +439,7 @@ registerCommand({
   order: 150,
   forms: [
     // The GitHub App a runner posts its effects with (commands/runner-github.ts).
-    { usage: 'crossroom runner github setup [--org <owner>]', summary: "a GitHub App for this runner's effects, from a manifest", order: 151 },
+    { usage: 'crossroom runner github setup [--org <owner>] [--port <n>]', summary: "a GitHub App for this runner's effects, from a manifest", order: 151 },
     // `crossroom runner service install|status|uninstall` still runs, and is
     // `crossroom background … --only runner`, which writes the same unit: the help names background only.
   ],

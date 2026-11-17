@@ -124,6 +124,8 @@ export async function joinSeat(o: JoinOptions): Promise<JoinOutcome> {
     throw new JoinUsage(i.path[0] === 'runtime' ? `--with takes claude, codex or grok; got "${runtime}".` : i.message);
   }
   const seat = cfg.data;
+  // `api` is a runner's standing seat on an API key (runner/api-seat.ts), never a pasted link's agent.
+  if (seat.runtime === 'api') throw new JoinUsage(`--with takes claude, codex or grok; got "${runtime}".`);
   const base: Adapter = o.runners?.adapters?.[seat.runtime] ?? ADAPTERS[seat.runtime];
   if (base.hostedBlocked) throw new JoinUsage(base.hostedBlocked);
   const bin = (o.runners?.resolveBin ?? resolveBin)(base.bin);

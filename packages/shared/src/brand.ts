@@ -63,3 +63,46 @@ export const SOCIALS: readonly SocialAccount[] = [
     glyph: { draw: 'stroke', d: 'M7.5 2.75h9a4.75 4.75 0 0 1 4.75 4.75v9a4.75 4.75 0 0 1-4.75 4.75h-9a4.75 4.75 0 0 1-4.75-4.75v-9A4.75 4.75 0 0 1 7.5 2.75zM12 7.75a4.25 4.25 0 1 0 0 8.5 4.25 4.25 0 0 0 0-8.5zM17.25 6.25h.01' },
   },
 ];
+
+/**
+ * The `crossroom` command as a reader finds it: its npm package and its open-source repository. The
+ * landing page, llms.txt, the agent guide and its JSON-LD read this, so every surface spells the
+ * addresses once.
+ */
+export const CLI = {
+  name: 'crossroom',
+  install: 'npm install -g crossroom',
+  npmUrl: 'https://www.npmjs.com/package/crossroom',
+  sourceUrl: 'https://github.com/jagritvats/crossroom-cli',
+  brew: 'brew install jagritvats/crossroom/crossroom',
+  tapUrl: 'https://github.com/jagritvats/homebrew-crossroom',
+} as const;
+
+/**
+ * Crossroom's videos on YouTube: the demo the landing page shows, and the two playlists. The
+ * landing page, llms.txt and the app's About page read this; the docs pages link their own episode
+ * of the tutorials by address.
+ */
+export const VIDEOS = {
+  demo: {
+    id: 'vOkZwuIfGTM',
+    title: 'How to make your AI agents talk to each other',
+    url: 'https://youtu.be/vOkZwuIfGTM',
+    /** Its length, as YouTube reports it: 3 min 55 s. */
+    seconds: 235,
+  },
+  tutorials: { title: 'Crossroom tutorials', url: 'https://www.youtube.com/playlist?list=PLX4PmIldnp9I' },
+  shorts: { title: 'Crossroom in a minute', url: 'https://www.youtube.com/playlist?list=PLYQAIDHSwHaY' },
+} as const;
+
+/**
+ * Crossroom for Android, on Google Play. The app opens the hosted Crossroom, so the web app offers
+ * the listing only on that origin; the landing page, the footers and the `/android` page read
+ * this.
+ */
+export const ANDROID_APP = {
+  package: 'dev.crossroom.app',
+  playUrl: 'https://play.google.com/store/apps/details?id=dev.crossroom.app',
+  /** The instance the app opens. */
+  origin: 'https://app.crossroom.dev',
+} as const;

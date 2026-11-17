@@ -13,6 +13,8 @@
  *   person's own token (lane-mirror/), and with `--inbound` brings labelled issues and trusted
  *   comments in. `crossroom lane notify` posts what moved to Slack or Teams. `crossroom lane ci`
  *   prints both as a scheduled GitHub Actions workflow and an Azure Pipelines one.
+ * - `crossroom lane contract` (lane-contract.ts) files a heads-up for the other side when a push
+ *   changed files it depends on; `crossroom lane ci contract` prints it as a CI job.
  *
  * In CI, where no lanes.json exists, `--link` or `CROSSROOM_LANE_LINK` names the lane.
  *
@@ -23,16 +25,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_AUTONOMY, isLaneAutonomy, type LaneAutonomy, type LaneItemsData, passPrompt, scheduleLines } from '@parley/shared/lane';
+import { contractRecipes } from '@parley/shared/lane-contract';
 import { CI_STATE_DIR, ciRecipes } from '@parley/shared/lane-mirror';
 import type { CreateSessionResult } from '@parley/shared';
 import { curlRule, firstLine, laneSideNames } from '@parley/shared/text';
 import { type Args, dataDir, saveRoom, text, Usage } from '../cli.js';
+import { reach } from '../reach.js';
 import { lanePasteLine } from '../site/lane-guide.js';
 import { relayOrigin } from './credentials.js';
 import { type Client, line, pickProject, type ProjectRef } from './project-pick.js';
 import { call, chosenInstance, type FetchLike, realFetch, signedIn } from './relay-call.js';
 import { type HelpLine, helpLine, registerCommand } from './index.js';
 import { DEFAULT_INSTANCE } from './new.js';
+import { contractLines, contractOnce, gitIn, loadContractConfig } from './lane-contract.js';
 import { loadMirrorConfig, trackerFor, trackerToken } from './lane-mirror/config.js';
 import { httpLanePort, type MirrorSummary, mirrorOnce } from './lane-mirror/engine.js';
 import { notifyOnce, notifyTarget } from './lane-mirror/notify.js';
@@ -119,7 +124,7 @@ export async function openLane(args: Args, fetchImpl: typeof fetch = fetch): Pro
   const brief = args.positional.slice(1).join(' ').trim();
   const autonomy = text(args.flags.autonomy);
   if (autonomy !== undefined && !isLaneAutonomy(autonomy)) throw new Usage('--autonomy is pr, branch or read.');
-  const res = await fetchImpl(`${base}/api/sessions/quick`, {
+  const res = await reach(fetchImpl, `${base}/api/sessions/quick`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify({
@@ -130,8 +135,6 @@ export async function openLane(args: Args, fetchImpl: typeof fetch = fetch): Pro
       name: text(args.flags.name) ?? path.basename(process.cwd()),
     }),
     redirect: 'error',
-  }).catch((e: Error) => {
-    throw new Usage(`${base} did not answer (${e.message}). Check the address, or pass --relay <url>.`);
   });
   if (!res.ok) throw new Usage(`${base} did not open a lane: ${await errorOf(res)}`);
   const made = (await res.json()) as { session: { id: string; title: string; createdAt: string }; ownerToken: string; ownerUrl: string; seatUrls: string[]; briefing?: string };
@@ -347,7 +350,7 @@ const summaryLine = (s: MirrorSummary) =>
 /** The CI recipes are shared with the web app's Connect your tools dialog (`@parley/shared/lane-mirror`). */
 export { CI_STATE_DIR, ciRecipes };
 
-const USAGE = 'crossroom lane [list|open|add|pass|schedule|mirror|notify|ci]';
+const USAGE = 'crossroom lane [list|open|add|pass|schedule|mirror|notify|contract|ci]';
 const SUMMARY = 'items you file for another repository, worked on its next pass';
 const MORE: HelpLine[] = [
   { usage: 'open ["<what>"] [--autonomy pr|branch|read] [--briefing]', summary: 'open a lane for this directory; prints the line for the other side' },
@@ -355,8 +358,13 @@ const MORE: HelpLine[] = [
   { usage: 'add <link>', summary: 'record the lane link you were given for this directory' },
   { usage: 'pass | schedule [HH:MM]', summary: "this directory's pass, and how to run it every weekday" },
   { usage: 'mirror [--inbound] [--dry-run] [--every <s>]', summary: 'mirror to GitHub, Linear, Jira or Azure DevOps' },
+  { usage: 'mirror --provider <p> --target <where>', summary: 'the tracker, and where its issues go' },
+  { usage: 'mirror [--items theirs|mine|all] [--label <l>]', summary: "which items go out, and the issues' label" },
+  { usage: 'mirror [--site <url>] [--browse <url>] [--config <f>]', summary: 'a self-managed tracker, and a settings file' },
   { usage: 'notify --slack|--teams <url> [--titles]', summary: 'post what moved to Slack or Teams' },
-  { usage: 'ci', summary: 'the mirror and notify as scheduled CI jobs' },
+  { usage: 'contract [--paths <globs>] [--dry-run]', summary: 'a heads-up for the other side when files it depends on changed' },
+  { usage: 'contract [--base <commit>] [--head <commit>]', summary: 'the change to look at, when the CI names none' },
+  { usage: 'ci [contract]', summary: 'the mirror and notify, or contract watch, as CI jobs' },
 ];
 
 /** `crossroom lane help`: the lane command's own lines, not the whole program's. */
@@ -458,11 +466,28 @@ registerCommand({
         });
         return 0;
       }
+      case 'contract': {
+        const link = laneOf(args);
+        const cwd = process.cwd();
+        const r = await contractOnce({
+          lane: httpLanePort(link),
+          link,
+          config: loadContractConfig(cwd, args.flags),
+          git: gitIn(cwd),
+          cwd,
+          dataDir: dataDir(),
+          ...(text(args.flags.base) ? { base: text(args.flags.base)! } : {}),
+          ...(text(args.flags.head) ? { head: text(args.flags.head)! } : {}),
+          dryRun: args.flags['dry-run'] === true,
+        });
+        console.log(args.flags.json ? JSON.stringify(r) : contractLines(r).join('\n'));
+        return 0;
+      }
       case 'ci':
-        console.log(ciRecipes());
+        console.log(args.positional[1] === 'contract' ? contractRecipes() : ciRecipes());
         return 0;
       default:
-        throw new Usage('crossroom lane [list|open|add|pass|schedule|mirror|notify|ci]');
+        throw new Usage(USAGE);
     }
   },
 });

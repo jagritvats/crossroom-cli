@@ -81,16 +81,17 @@ export const PASS_RESPONSE_HEADERS = ['content-type', 'mcp-session-id', 'mcp-pro
  * tools' three: a declaration, a call's args and a result are the agent's words. And `open_room`,
  * whose title, brief, seats and reason are the lead's words. And a lane's `file`,
  * `update` and `verify`, whose repro, notes and refs are the agent's words; `items` and
- * `pass` only read, and go ungated.
+ * `pass` only read, and go ungated. And a project room's `plan`, whose items are the lead's words;
+ * `progress` only reads, and goes ungated.
  */
-export const GATED_OPS: readonly GatedOp[] = ['share_context', 'say', 'claim', 'position', 'request_context', 'decline_context', 'finish', 'join', 'record', 'work', 'submit', 'report', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'file', 'update', 'verify', 'autonomy'];
+export const GATED_OPS: readonly GatedOp[] = ['share_context', 'say', 'claim', 'position', 'request_context', 'decline_context', 'finish', 'join', 'record', 'work', 'submit', 'report', 'plan', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'file', 'update', 'verify', 'autonomy'];
 /**
  * The operations that carry nothing of the agent's out: forwarded without asking the gate. `subrooms`
  * sends nothing at all (its answer brings seat links in, once), so it is here though it is no GET.
  * `context` reads a sparse room's packets: its words to search for stay in the room
  * the seat already shares packets with, and it writes nothing.
  */
-export const UNGATED_OPS: readonly string[] = ['wait', 'status', 'board', 'subrooms', 'context', 'items', 'pass'];
+export const UNGATED_OPS: readonly string[] = ['wait', 'status', 'board', 'subrooms', 'context', 'items', 'pass', 'progress'];
 
 /** The one body for a path that opens nothing here: unknown, closed or malformed nonce. */
 export const NO_ROUTE = 'nothing is served here';

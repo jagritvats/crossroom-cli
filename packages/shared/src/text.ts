@@ -202,7 +202,7 @@ export function sourceCheckTag(c: SourceCheck): string {
 // ---------------- runtimes in seat names ----------------
 
 /** What a hosted runner is called where a seat name carries it, as in "Frontend (Codex)". */
-export const RUNNER_LABELS: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', grok: 'Grok' };
+export const RUNNER_LABELS: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', grok: 'Grok', api: "Crossroom's agent" };
 
 /**
  * A seat name with its runtime changed. The seat keeps its role and takes the name of what now

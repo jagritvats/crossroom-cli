@@ -316,7 +316,7 @@ export async function askLink(args: Args, say: (line: string) => void, io: AskIo
       `  ${seatPrompt(seatUrl)}`,
       '',
       `Watch it: ${watchUrl}`,
-      `Minutes once it ends: crossroom minutes ${room.id}`,
+      `Recap once it ends: crossroom minutes ${room.id}`,
     ].join('\n'),
   );
   return 0;

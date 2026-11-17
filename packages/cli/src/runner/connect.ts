@@ -131,6 +131,9 @@ function capabilities(): RunnerCapabilities {
     // It leases tracker reads (runner/reads.ts), checked against effects.yml's `tracker_read` rules:
     // the relay queues none for one that does not say so.
     trackerReads: true,
+    // It takes Crossroom's own agent on an `api` seat (`StartSeatPayload.house`, runner/api-seat.ts),
+    // metered through the relay's ledger: the relay seats it on no runner that does not say so.
+    houseSeats: true,
   };
 }
 
@@ -168,6 +171,7 @@ function dispatchSeat(seat: SeatConfig, read: { budget: DispatchSeat['budget']; 
     label: seat.label,
     budget: read.budget,
     paused: seat.paused,
+    runtime: seat.runtime,
     ...(read.askLinks ? {} : { askLinks: false }),
     // The grants this seat answers through across a connection, from runner.yml alone.
     connections: (seat.connections ?? []).map((c) => ({
@@ -371,6 +375,7 @@ function openRunner(o: ConnectOptions): RunnerConnection {
     },
     updateJob: (jobId: string, input: JobUpdateInput, seatToken?: string) => client.updateJob(jobId, input, seatToken ? { seatToken } : {}),
     heartbeat: (input) => client.heartbeat(input),
+    spend: (jobId, input) => client.spend(jobId, input),
   };
 
   const hostDispatch: HostDispatch = {
@@ -388,7 +393,16 @@ function openRunner(o: ConnectOptions): RunnerConnection {
         return now && read ? [dispatchSeat(now, read)] : [];
       };
       // A runner with an identity holds the X25519 key its job's route opens end-to-end rooms with.
-      const v = await checkDispatch(job, { store, seats, readSeat: (t) => client.seatPage(t), e2ee: true, grants, refreshGrants });
+      const v = await checkDispatch(job, { store, seats, readSeat: (t) => client.seatPage(t),
+        e2ee: true,
+        grants,
+        refreshGrants,
+        // A house job's seat must hold a live reservation of its workspace's credit on the relay.
+        houseSpend: async (jobId) => {
+          const r = await client.spend(jobId, { op: 'look' });
+          return r.op === 'look' ? { open: r.open, metered: r.metered } : { open: false, metered: true };
+        },
+      });
       if (v.ok) {
         // The host needs the whole payload; it opened under this runner's key a moment ago.
         const id = store.requireIdentity();

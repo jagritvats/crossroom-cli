@@ -192,12 +192,18 @@ export interface LedgerSummary {
  */
 const namer = (snap: SessionSnapshot) => (id: string) =>
   id === 'human'
-    ? 'Human'
+    ? 'the owner'
     : id === 'system'
       ? 'Crossroom'
       : id === 'all'
         ? 'everyone'
         : oneLine(snap.participants.find((p) => p.id === id)?.name ?? id);
+
+/**
+ * The same namer for the first word of a sentence or a list item. Only Crossroom's own words are
+ * capitalised ("The owner"); a seat's name is printed as the seat or the owner wrote it.
+ */
+const atStart = (name: (id: string) => string) => (id: string) => (id === 'human' ? 'The owner' : name(id));
 
 /**
  * Participant-authored text, on one line.
@@ -251,6 +257,28 @@ function latestPerParticipant(positions: Position[], claim: Claim): Position[] {
   return [...last.values()];
 }
 
+/** Crossroom's ending for a room whose every seat finished: the words it stores today, and before 2026-11. */
+const ALL_FINISHED = new Set(['The room ended when every agent finished.', 'All participants finished.']);
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const two = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * A time the recap prints, read the same wherever it is opened: always UTC, never the reader's
+ * locale: "10:52 UTC". `date` adds the day ("6 Nov 2026, 10:42 UTC"), and `seconds` the seconds
+ * ("10:52:07 UTC"), which a transcript needs, since a room's messages are often seconds apart. A
+ * value that is not a time is returned as it came.
+ */
+export function utcTime(iso: string, o: { date?: boolean; seconds?: boolean } = {}): string {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return iso;
+  const clock = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}${o.seconds ? `:${two(d.getUTCSeconds())}` : ''} UTC`;
+  return o.date ? `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${clock}` : clock;
+}
+
+/** Whether two times fall on different UTC days, so a clock alone would be ambiguous. */
+const spansDays = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.slice(0, 10) !== b.slice(0, 10);
+
 /** Wall time in the shape a reader skims rather than parses. */
 function describeDuration(fromIso: string | null, toIso: string | null): string | null {
   if (!fromIso || !toIso) return null;
@@ -272,6 +300,7 @@ function describeDuration(fromIso: string | null, toIso: string | null): string 
 export function ledgerSummary(snap: SessionSnapshot): LedgerSummary {
   const { session: s, messages, contextRequests, contextItems, claims, positions } = snap;
   const name = namer(snap);
+  const Name = atStart(name);
   const line = (claim: Claim): ClaimLine => ({ claim, latest: latestPerParticipant(positions, claim) });
 
   // Only the two kinds that are concessions. `claim_updated` means "something happened to a
@@ -350,16 +379,16 @@ export function ledgerSummary(snap: SessionSnapshot): LedgerSummary {
     openThreads.push({
       kind: 'unanswered',
       text: after.length
-        ? `${name(r.from)} ${askedFor(r, name)}. ${name(r.to)} shared ${after.map((i) => i.label).join(', ')} afterwards but never marked the request answered.`
-        : `${name(r.from)} ${askedFor(r, name)} and never got an answer.`,
+        ? `${Name(r.from)} ${askedFor(r, name)}. ${Name(r.to)} shared ${after.map((i) => i.label).join(', ')} afterwards but never marked the request answered.`
+        : `${Name(r.from)} ${askedFor(r, name)} and never got an answer.`,
     });
   }
   for (const r of declined)
     openThreads.push({
       kind: 'declined',
       text: r.tool
-        ? `${name(r.to)} declined to run ${call(r.tool, r.args)} ("${clip(r.what, 300)}").`
-        : `${name(r.to)} declined "${clip(r.what, 300)}".`,
+        ? `${Name(r.to)} declined to run ${call(r.tool, r.args)} ("${clip(r.what, 300)}").`
+        : `${Name(r.to)} declined "${clip(r.what, 300)}".`,
     });
   if (s.status !== 'ended')
     openThreads.push({ kind: 'not-ended', text: 'The session has not ended, so this record is not final.' });
@@ -879,7 +908,7 @@ function acceptedBlock(snap: SessionSnapshot): string[] {
   if (!list.length) return [];
   const out = ['', '## Accepted as a fair record', '', acceptedSentence(list, snap)];
   for (const a of list) {
-    out.push('', `**${a.by === 'owner' ? 'The owner' : acceptorName(a, snap)}** · accepted ${a.at}`);
+    out.push('', `**${a.by === 'owner' ? 'The owner' : acceptorName(a, snap)}** · accepted ${utcTime(a.at, { date: true })}`);
     if (a.note) out.push('', ...quote(a.note));
   }
   return out;
@@ -952,14 +981,17 @@ function whatHappened(
   const finished = closeOuts(snap);
 
   // The outcome: the room's own ending first, then each seat's summary under its name. The owner's
-  // words keep their shape behind `> `; Crossroom's own ending ("All participants finished.") is one line.
+  // words keep their shape behind `> `; Crossroom's own ending is one line that says how the room ended.
   const outcome: string[] = [];
   const s = snap.session;
+  const byOwner = snap.events.some((e) => e.type === 'session_ended' && e.actor === 'human');
   if (s.outcome?.trim()) {
-    const byOwner = snap.events.some((e) => e.type === 'session_ended' && e.actor === 'human');
     if (byOwner) outcome.push('The owner ended the room:', '', ...quote(o.max === null ? s.outcome : clip(s.outcome, o.max)), '');
+    // Crossroom's own sentence for a room whose every seat finished says how it ended, never what
+    // was settled: nobody wrote an outcome for the room, so the seats' summaries below are the record.
+    else if (ALL_FINISHED.has(s.outcome.trim())) outcome.push(`The room ended when every agent finished${finished.length ? '; what each one reported is below' : ''}.`, '');
     else outcome.push(`${text(s.outcome, 400)}`, '');
-  }
+  } else if (byOwner) outcome.push('The owner ended the room.', '');
   // A seat's role (owner-written) sits beside its name here, the one place the recap reads by seat;
   // item attributions below stay name and letter, since `## Participants` already gives the roles.
   for (const f of finished) {
@@ -970,8 +1002,10 @@ function whatHappened(
   if (outcome.at(-1) === '') outcome.pop();
   block('Outcome', outcome);
 
+  // A decision is what the seat that finished wrote down, never a ruling of the owner's, so it says
+  // whose note it is; the room keeps no other list of decisions.
   const items = (field: 'decisions' | 'actions' | 'open') =>
-    finished.flatMap((f) => (f[field] ?? []).map((item) => `- ${text(item, 300)} — ${who(f.participantId)}`));
+    finished.flatMap((f) => (f[field] ?? []).map((item) => `- ${text(item, 300)} — ${field === 'decisions' ? 'noted by ' : ''}${who(f.participantId)}`));
   // An action that names its owner first ("B: ship the fix") is printed under that seat, with who
   // noted it, so a seat's own list never reads as if it owns what it handed to another.
   const actions = finished.flatMap((f) =>
@@ -1067,7 +1101,7 @@ function claimsBlock(snap: SessionSnapshot, sum: LedgerSummary, o: { digest: boo
     for (const c of sum.disputed) {
       out.push(`- ${c.claim.label}: ${inline(c.claim.text)}`);
       for (const p of c.latest)
-        out.push(`  - ${name(p.participantId)} ${p.stance}${p.reason ? `: ${inline(p.reason)}` : ''}${p.evidence.length ? ` (${p.evidence.join(', ')})` : ''}`);
+        out.push(`  - ${atStart(name)(p.participantId)} ${p.stance}${p.reason ? `: ${inline(p.reason)}` : ''}${p.evidence.length ? ` (${p.evidence.join(', ')})` : ''}`);
     }
 
   if (sum.settled.length) {
@@ -1111,8 +1145,8 @@ function fullMinutes(snap: SessionSnapshot, sum: LedgerSummary, url: string, ori
   // is their own broken page; in a digest pasted into a pull request, or anything a stranger
   // reads later, it is a section nobody wrote. An end-to-end room's title reaches this function
   // straight from the owner's browser, so collapsing it where the room is created is not enough.
-  // A lane says what it is in its heading: its recap is a list of items, not a meeting's minutes.
-  out.push(`# ${snap.lane ? 'Lane recap' : 'Minutes'}: ${inline(s.title)}`);
+  // A lane says what it is in its heading: its recap is a list of items, not a meeting's record.
+  out.push(`# ${snap.lane ? 'Lane recap' : 'Recap'}: ${inline(s.title)}`);
   out.push('');
   // Only the owner's view has the event (its audience is the owner), so only their minutes say
   // it. The first title may be an agent's first message, so it is clipped onto the line.
@@ -1133,7 +1167,7 @@ function fullMinutes(snap: SessionSnapshot, sum: LedgerSummary, url: string, ori
   }
   // A lane has no mode to speak of (it is always `free`, which would read as a meeting's choice).
   out.push(
-    `${snap.lane ? 'An async lane' : `Mode: ${s.mode}`}. Status: ${s.status}. Started: ${s.startedAt ?? '—'}. Ended: ${s.endedAt ?? '—'}.` +
+    `${snap.lane ? 'An async lane' : `Mode: ${s.mode}`}. Status: ${s.status}. Started: ${s.startedAt ? utcTime(s.startedAt, { date: true }) : '—'}. Ended: ${s.endedAt ? utcTime(s.endedAt, { date: true }) : '—'}.` +
       (sum.duration ? ` Ran ${sum.duration}.` : ''),
   );
   if (s.sharedBrief.trim()) {
@@ -1233,7 +1267,7 @@ function fullMinutes(snap: SessionSnapshot, sum: LedgerSummary, url: string, ori
     for (const r of contextRequests) {
       const a = answerTo(r);
       if (!r.tool) {
-        out.push(`- ${name(r.from)} asked ${name(r.to)}: "${clip(r.what, 300)}" — ${r.status}${a ? ` (answered with ${a.label})` : ''}`);
+        out.push(`- ${atStart(name)(r.from)} asked ${name(r.to)}: "${clip(r.what, 300)}" — ${r.status}${a ? ` (answered with ${a.label})` : ''}`);
         continue;
       }
       // A tool request is fulfilled by a packet, and only the packet says what ran. When the
@@ -1242,7 +1276,7 @@ function fullMinutes(snap: SessionSnapshot, sum: LedgerSummary, url: string, ori
         r.status === 'fulfilled' && a
           ? `fulfilled with ${a.label}${a.kind === 'tool_output' ? '' : `, a ${a.kind} packet rather than the tool's output`}`
           : r.status;
-      out.push(`- ${name(r.from)} ${askedFor(r, name)} ("${clip(r.what, 300)}"): ${outcome}`);
+      out.push(`- ${atStart(name)(r.from)} ${askedFor(r, name)} ("${clip(r.what, 300)}"): ${outcome}`);
     }
     for (const i of contextItems) {
       out.push(`- ${packetLine(i)} (${i.bytes} bytes)${cited.has(i.label) ? ' — cited as evidence' : ''}`);
@@ -1260,17 +1294,19 @@ function fullMinutes(snap: SessionSnapshot, sum: LedgerSummary, url: string, ori
     out.push('');
     out.push(`## Appendix: transcript (${count(sum.agentMessages, 'agent message')}, ${sum.otherMessages} human/system)`);
   }
+  // The clock alone reads well while the transcript stays on one UTC day; past it, each head says the day.
+  const daysApart = spansDays(messages[0]?.createdAt, messages.at(-1)?.createdAt);
   for (const m of messages) {
     out.push('');
     // Who it was addressed to (`@C`), when anyone was: seat names, so each goes through `inline`.
     const to = m.mentions?.length ? ` → ${m.mentions.map((id) => inline(name(id))).join(', ')}` : '';
-    out.push(`**${inline(m.authorName)}**${to} · ${m.createdAt}`);
+    out.push(`**${inline(m.authorName)}**${to} · ${utcTime(m.createdAt, { date: daysApart, seconds: true })}`);
     out.push('');
     out.push(...quote(m.text));
   }
   out.push(...acceptedBlock(snap));
   out.push('');
-  out.push('_Generated by Crossroom from the session ledger; no model summarisation involved._');
+  out.push("_Rendered by Crossroom from the room's record._");
   return out.join('\n');
 }
 
@@ -1449,7 +1485,7 @@ function digest(snap: SessionSnapshot, sum: LedgerSummary, url: string, origin: 
   }
 
   out.push('');
-  out.push(`_Deterministic minutes from the [Crossroom ledger](${url}); no model summarisation involved. The transcript stays in the room._`);
+  out.push(`_Deterministic minutes from the [Crossroom ledger](${url}). The transcript stays in the room._`);
   return clampDigest(out.join('\n'));
 }
 
@@ -1458,7 +1494,7 @@ const clampDigest = (text: string) => clampTo(text, DIGEST_MAX_CHARS);
 
 function clampTo(text: string, max: number): string {
   if (text.length <= max) return text;
-  const note = '\n\n_Truncated here: this digest was longer than one comment holds. The full minutes are in the room._';
+  const note = '\n\n_Truncated here: this digest was longer than one comment holds. The full recap is in the room._';
   const room = max - note.length;
   const cut = text.slice(0, room);
   const atLine = cut.lastIndexOf('\n');

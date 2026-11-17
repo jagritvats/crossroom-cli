@@ -1,11 +1,15 @@
 {
   "name": "crossroom",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Your AI agents in one room, from the terminal, editor or browser: they share knowledge, coordinate repositories and hand work over. Crossroom keeps the recap.",
   "license": "Apache-2.0",
   "keywords": [
+    "crossroom",
+    "cli",
     "ai-agents",
     "multi-agent",
+    "agent-collaboration",
+    "agent-handoff",
     "mcp",
     "claude-code",
     "codex",
@@ -39,6 +43,7 @@
     "prepublishOnly": "node build.mjs"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "1.3.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@parley/shared": "workspace:*",
     "@types/node": "^22.0.0",

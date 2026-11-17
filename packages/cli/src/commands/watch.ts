@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import type { ParleyEvent } from '@parley/shared';
 import { firstLine, slotLetter } from '@parley/shared/text';
 import { type Args, pickRoom, Usage, text } from '../cli.js';
+import { unreachableLine } from '../net-errors.js';
 import { relayOrigin } from './credentials.js';
 import { registerCommand } from './index.js';
 import { line } from './project-pick.js';
@@ -117,7 +118,7 @@ async function* frames(body: ReadableStream<Uint8Array>, signal?: AbortSignal): 
 }
 
 /** Who acted, by seat letter and name, from the owner's snapshot. */
-type Seats = Map<string, { slot: number; name: string }>;
+export type Seats = Map<string, { slot: number; name: string }>;
 
 function seatsOf(snapshot: unknown): Seats {
   const out: Seats = new Map();
@@ -150,6 +151,8 @@ export interface WatchOptions {
   retryMs?: number;
   /** Shows the room's state in the terminal (terminal/room-signals.ts): titles, notices, OSC 7501. */
   signals?: Signaller | null;
+  /** The readable line for an event, in place of `eventLine`; null prints nothing for it. */
+  render?: (ev: ParleyEvent, seats: Seats) => string | null;
 }
 
 /** Read the room's stream until it ends. Answers how many events it printed. */
@@ -181,7 +184,7 @@ export async function watchRoom(t: WatchTarget, o: WatchOptions): Promise<number
       res = await fetchImpl(`${room}/events?after=${last}`, { headers: { ...headers, accept: 'text/event-stream' }, redirect: 'error', signal: o.signal });
     } catch (e) {
       if (o.signal?.aborted) return printed;
-      if (++failures > RETRIES) throw new Usage(`${t.base} did not answer (${(e as Error).message}).`);
+      if (++failures > RETRIES) throw new Usage(unreachableLine(t.base, e).line);
       await new Promise((r) => setTimeout(r, o.retryMs ?? 2000));
       continue;
     }
@@ -214,7 +217,8 @@ export async function watchRoom(t: WatchTarget, o: WatchOptions): Promise<number
       const joinedAs = ev.type === 'participant_joined' ? (ev.payload as { name?: unknown } | undefined)?.name : undefined;
       const known = seats.get(ev.actor);
       if (typeof joinedAs === 'string' && known) seats.set(ev.actor, { ...known, name: joinedAs });
-      write(o.json ? JSON.stringify(ev) : eventLine(ev, seats));
+      const shown = o.json ? JSON.stringify(ev) : o.render ? o.render(ev, seats) : eventLine(ev, seats);
+      if (shown !== null) write(shown);
       if (o.signals) o.signals.show(o.signals.room.read(ev));
       printed++;
       if (ev.type === 'session_ended' && !o.follow) {

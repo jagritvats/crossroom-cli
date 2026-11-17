@@ -7,7 +7,7 @@
  */
 import { accessSync, chmodSync, constants, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { HostedRunner } from '@parley/shared';
+import type { CliRunner } from '@parley/shared';
 
 export interface TurnSpec {
   prompt: string;
@@ -120,7 +120,7 @@ export const withUsage = (adapter: Adapter, onUsage: (u: TurnUsage) => void): Ad
 });
 
 export interface Adapter {
-  id: HostedRunner;
+  id: CliRunner;
   bin: string; // executable name
   label: string;
   provider: string;
@@ -425,7 +425,7 @@ export const codex: Adapter = {
   ),
 };
 
-export const ADAPTERS: Record<HostedRunner, Adapter> = { claude, codex, agy, grok };
+export const ADAPTERS: Record<CliRunner, Adapter> = { claude, codex, agy, grok };
 
 function tryJson(line: string): any | null {
   const t = line.trim();

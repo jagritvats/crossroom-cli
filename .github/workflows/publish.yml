@@ -68,16 +68,25 @@ jobs:
           node packages/cli/dist/crossroom.mjs --version
           node packages/cli/dist/crossroom.mjs help start > /dev/null
 
+      # A prerelease (a version with a "-", such as 0.3.0-beta.0) goes out under npm's `beta` tag, so
+      # `npm install -g crossroom` keeps installing the latest release; npm refuses a prerelease with no tag.
       - name: Publish (dry run)
         if: ${{ !inputs.release }}
         working-directory: packages/cli
-        run: npm publish --dry-run --access public
+        env:
+          WANTED: ${{ inputs.version }}
+        run: |
+          tag=latest; case "$WANTED" in *-*) tag=beta ;; esac
+          npm publish --dry-run --access public --tag "$tag"
 
       - name: Publish
         if: ${{ inputs.release }}
         working-directory: packages/cli
-        run: npm publish --provenance --access public
+        run: |
+          tag=latest; case "$WANTED" in *-*) tag=beta ;; esac
+          npm publish --provenance --access public --tag "$tag"
         env:
+          WANTED: ${{ inputs.version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Once a release is on npm, the Homebrew formula follows it (tap.yml). A prerelease stays on npm only.

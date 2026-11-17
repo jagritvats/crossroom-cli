@@ -22,7 +22,7 @@ export const LEDGER_SYNC_REFILL_MS = 2000;
  * each of them, `record`'s queries included, so a team sees every call its agents' words went out
  * in (a test holds this list to the proxy's).
  */
-export const LedgerOp = z.enum(['share_context', 'say', 'claim', 'position', 'request_context', 'decline_context', 'finish', 'join', 'record', 'work', 'submit', 'report', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'file', 'update', 'verify', 'autonomy']);
+export const LedgerOp = z.enum(['share_context', 'say', 'claim', 'position', 'request_context', 'decline_context', 'finish', 'join', 'record', 'work', 'submit', 'report', 'plan', 'board_set', 'declare_tool', 'call_tool', 'tool_result', 'open_room', 'file', 'update', 'verify', 'autonomy']);
 /** A rule's name, as `PolicyEventInput.rule` takes one: `deny`, `secret:aws_access_key`, `review:path`, `pass`. */
 const RULE = /^[a-z_]+(:[a-z0-9_]+)?$/;
 

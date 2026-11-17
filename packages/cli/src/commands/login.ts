@@ -23,6 +23,7 @@
  */
 import { type AccountView, API_TOKEN, type CliLoginStart, PROVIDER_LABELS } from '@parley/shared/accounts';
 import { type Args, openBrowser, Usage } from '../cli.js';
+import { unreachableLine } from '../net-errors.js';
 import { credentialsPath, DEFAULT_RELAY, readCredentials, writeCredentials } from './credentials.js';
 import { findCommand, registerCommand } from './index.js';
 import { type AccountCredential, API_KEY_ENV, accountCredential, chosenInstance, credentialWhere } from './relay-call.js';
@@ -61,14 +62,16 @@ const SLOW_DOWN_MS = 5_000;
 const REQUEST_MS = 15_000;
 const USER_CODE = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
-type Answer = { status: number; body: Record<string, unknown> | null } | { status: 0; body: null };
+/** `why`: for a request that got no answer (status 0), the line that says so (reach.ts). */
+type Answer = { status: number; body: Record<string, unknown> | null; why?: string };
 
 async function call(deps: LoginDeps, url: string, init: RequestInit): Promise<Answer> {
   let res: Response;
   try {
-    res = await deps.fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_MS) });
-  } catch {
-    return { status: 0, body: null };
+    // Never a redirect: the account's token or its sign-in code goes only to the relay named.
+    res = await deps.fetch(url, { redirect: 'error', ...init, signal: AbortSignal.timeout(REQUEST_MS) });
+  } catch (e) {
+    return { status: 0, body: null, why: unreachableLine(url, e, { timeoutMs: REQUEST_MS }).line };
   }
   const body = (await res.json().catch(() => null)) as unknown;
   return { status: res.status, body: body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : null };
@@ -84,7 +87,7 @@ const postJson = (body: unknown, headers: Record<string, string> = {}): RequestI
 const said = (a: Answer) => (typeof a.body?.error === 'string' ? a.body.error : `HTTP ${a.status}`);
 
 function started(relay: string, a: Answer): CliLoginStart {
-  if (a.status === 0) throw new Usage(`${relay} did not answer. Check the address, or pass --relay <url>.`);
+  if (a.status === 0) throw new Usage(a.why ?? `${relay} did not answer. Check the address, or pass --relay <url>.`);
   if (a.status !== 201) throw new Usage(a.status === 404 && typeof a.body?.error === 'string' ? a.body.error : `${relay} refused to start a login: ${said(a)}`);
   const b = a.body as Partial<CliLoginStart> | null;
   if (
@@ -137,7 +140,7 @@ export async function loginStatus(args: Args, deps: LoginDeps = realDeps, env: N
   const cred = accountCredential(args, env);
   if (!cred) return { relay: chosenInstance(args, DEFAULT_RELAY, env), via: 'none', accepted: false, who: null, accountId: null };
   const a = await call(deps, `${cred.relay}/api/account`, { headers: { accept: 'application/json', authorization: `Bearer ${cred.token}` }, redirect: 'error' });
-  if (a.status === 0) throw new Usage(`${cred.relay} did not answer. Check the address, or pass --relay <url>.`);
+  if (a.status === 0) throw new Usage(a.why ?? `${cred.relay} did not answer. Check the address, or pass --relay <url>.`);
   const v = a.body as AccountView | null;
   if (a.status !== 200 || !v || v.signedIn !== true) return { relay: cred.relay, via: cred.via, accepted: false, who: null, accountId: null };
   const id = v.identities?.[0];
